@@ -10,3 +10,15 @@ management:
     web:
       exposure:
         include: health,info
+
+dream-scope:
+  model:
+    default: dashscope:qwen-plus
+  chat-timeout: 120s
+  workspace-dir: .agentscope/workspace
+  redis:
+    uri: redis://127.0.0.1:6379
+    key-prefix: "dream-scope:"
+  compaction:
+    trigger-messages: 30
+    keep-messages: 10

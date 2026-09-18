@@ -1,7 +1,7 @@
 package com.zhu.scope.agent;
 
 /**
- * 内置 Agent 标识。路由策略后续按意图映射到这些 id。
+ * 内置 Agent 标识。{@link #CHAT} 已接线；{@link #KNOWLEDGE} / {@link #TASK} 预留，尚未注册 Handler。
  */
 public final class AgentIds {
 

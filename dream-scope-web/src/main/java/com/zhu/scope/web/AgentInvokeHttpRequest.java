@@ -1,6 +1,9 @@
 package com.zhu.scope.web;
 
+import java.util.List;
+
 /**
  * HTTP 入参。转成 domain {@code AgentInvokeRequest} 后再进 Handler。
  */
-public record AgentInvokeHttpRequest(String agentId, String sessionId, String userId, String input) {}
+public record AgentInvokeHttpRequest(
+        String agentId, String sessionId, String userId, String input, List<String> imageUrls) {}

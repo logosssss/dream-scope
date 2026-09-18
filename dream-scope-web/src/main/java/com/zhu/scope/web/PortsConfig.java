@@ -1,36 +1,50 @@
 package com.zhu.scope.web;
 
+import com.zhu.scope.adapter.ChatHarnessOptions;
+import com.zhu.scope.adapter.ScopeChatAgent;
 import com.zhu.scope.agent.AgentHandler;
-import com.zhu.scope.agent.AgentIds;
-import com.zhu.scope.agent.AgentInvokeRequest;
-import com.zhu.scope.agent.AgentInvokeResult;
 import com.zhu.scope.agent.AgentRegistry;
 import com.zhu.scope.agent.InMemoryAgentRegistry;
 import com.zhu.scope.knowledge.RetrievePort;
 import com.zhu.scope.rag.InMemoryKeywordIndex;
 import java.util.List;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
 /**
- * 启动期接线：先挂 echo Handler，AgentScope ReAct 装配后续进 adapter。
+ * 组合根：从 Spring {@code Environment} 读模型与超时，再交给 adapter。
  */
 @Configuration
+@EnableConfigurationProperties(DreamScopeProperties.class)
 public class PortsConfig {
 
-    @Bean
-    AgentHandler echoChatHandler() {
-        return new AgentHandler() {
-            @Override
-            public String id() {
-                return AgentIds.CHAT;
-            }
-
-            @Override
-            public AgentInvokeResult handle(AgentInvokeRequest request) {
-                return new AgentInvokeResult(id(), "echo:" + request.input());
-            }
-        };
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(name = "chatAgentHandler")
+    AgentHandler chatAgentHandler(DreamScopeProperties props, Environment env) {
+        String modelId = ScopeChatAgent.resolveModelId(props.getModel().getChat(), props.getModel().getDefault());
+        String apiKey = env.getProperty(ScopeChatAgent.apiKeyProperty(modelId));
+        WorkspaceSubagentSeed.copyBundled(props.getWorkspaceDir());
+        String fallbackId = props.getModel().getFallback();
+        String fallbackKey =
+                fallbackId == null || fallbackId.isBlank()
+                        ? null
+                        : env.getProperty(ScopeChatAgent.apiKeyProperty(fallbackId));
+        ChatHarnessOptions options = new ChatHarnessOptions(
+                props.getChatTimeout(),
+                props.getWorkspaceDir(),
+                props.getCompaction().getTriggerMessages(),
+                props.getCompaction().getKeepMessages(),
+                props.getRedis().getUri(),
+                props.getRedis().getKeyPrefix(),
+                props.getModel().getTemperature(),
+                props.getModel().getTopP(),
+                props.getModel().getMaxTokens(),
+                fallbackId,
+                fallbackKey);
+        return ScopeChatAgent.create(modelId, apiKey, options);
     }
 
     @Bean
