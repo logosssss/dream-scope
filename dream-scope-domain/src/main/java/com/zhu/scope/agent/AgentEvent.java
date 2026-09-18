@@ -1,10 +1,17 @@
 package com.zhu.scope.agent;
 
+import java.util.Map;
+
 /**
  * 对外流式事件。无框架类型；adapter 把 AgentScope 事件编成这些形状。
  */
 public sealed interface AgentEvent
-        permits AgentEvent.TextDelta, AgentEvent.ToolCall, AgentEvent.ToolResult, AgentEvent.Done, AgentEvent.Error {
+        permits AgentEvent.TextDelta,
+                AgentEvent.ToolCall,
+                AgentEvent.ToolResult,
+                AgentEvent.Hint,
+                AgentEvent.Done,
+                AgentEvent.Error {
 
     record TextDelta(String text) implements AgentEvent {}
 
@@ -12,9 +19,24 @@ public sealed interface AgentEvent
 
     record ToolResult(String toolName, String output) implements AgentEvent {}
 
-    record Done(String finalOutput, int inputTokens, int outputTokens) implements AgentEvent {
+    record Hint(String text) implements AgentEvent {
+        public Hint {
+            text = text == null ? "" : text;
+        }
+    }
+
+    record Done(String finalOutput, int inputTokens, int outputTokens, Map<String, Object> data, boolean planActive)
+            implements AgentEvent {
         public Done(String finalOutput) {
-            this(finalOutput, 0, 0);
+            this(finalOutput, 0, 0, null, false);
+        }
+
+        public Done(String finalOutput, int inputTokens, int outputTokens) {
+            this(finalOutput, inputTokens, outputTokens, null, false);
+        }
+
+        public Done(String finalOutput, int inputTokens, int outputTokens, Map<String, Object> data) {
+            this(finalOutput, inputTokens, outputTokens, data, false);
         }
 
         public Done {
@@ -25,6 +47,7 @@ public sealed interface AgentEvent
             if (outputTokens < 0) {
                 outputTokens = 0;
             }
+            data = AgentInvokeResult.copyData(data);
         }
     }
 

@@ -20,6 +20,8 @@ public class DreamScopeProperties {
 
     private final CompactionSettings compaction = new CompactionSettings();
 
+    private final PlanModeSettings planMode = new PlanModeSettings();
+
     public ModelSettings getModel() {
         return model;
     }
@@ -46,6 +48,33 @@ public class DreamScopeProperties {
 
     public CompactionSettings getCompaction() {
         return compaction;
+    }
+
+    public PlanModeSettings getPlanMode() {
+        return planMode;
+    }
+
+    public static class PlanModeSettings {
+
+        private boolean enabled = true;
+
+        private String directory = "plans";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getDirectory() {
+            return directory;
+        }
+
+        public void setDirectory(String directory) {
+            this.directory = directory;
+        }
     }
 
     public static class CompactionSettings {

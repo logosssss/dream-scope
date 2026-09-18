@@ -46,6 +46,9 @@ class AgentInvokeControllerTest {
                 if ("fail".equals(request.input())) {
                     throw new AgentProviderException("upstream", null);
                 }
+                if (request.structured()) {
+                    return new AgentInvokeResult(id(), "stub:" + request.input(), 0, 0, java.util.Map.of("city", "大阪"));
+                }
                 return new AgentInvokeResult(id(), "stub:" + request.input());
             }
 
@@ -60,6 +63,7 @@ class AgentInvokeControllerTest {
                     return;
                 }
                 handler.onEvent(new AgentEvent.TextDelta("stub:" + request.input()));
+                handler.onEvent(new AgentEvent.Hint("先列步骤"));
                 handler.onEvent(new AgentEvent.Done("stub:" + request.input()));
                 handler.onComplete();
             }
@@ -75,7 +79,17 @@ class AgentInvokeControllerTest {
                 .andExpect(jsonPath("$.agentId").value("chat"))
                 .andExpect(jsonPath("$.output").value("stub:你好"))
                 .andExpect(jsonPath("$.inputTokens").value(0))
-                .andExpect(jsonPath("$.outputTokens").value(0));
+                .andExpect(jsonPath("$.outputTokens").value(0))
+                .andExpect(jsonPath("$.planActive").value(false));
+    }
+
+    @Test
+    void structuredInvokeReturnsData() throws Exception {
+        mockMvc.perform(post("/api/agents/invoke")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"天气\",\"structured\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.city").value("大阪"));
     }
 
     @Test

@@ -50,6 +50,7 @@ class AgentStreamControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("textDelta")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("hello")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("hint")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("done")));
     }
 
@@ -110,6 +111,7 @@ class AgentStreamControllerTest {
                             Thread.currentThread().interrupt();
                         }
                         handler.onEvent(new AgentEvent.TextDelta(request.input()));
+                        handler.onEvent(new AgentEvent.Hint("先列步骤"));
                         handler.onEvent(new AgentEvent.Done(request.input()));
                         handler.onComplete();
                     },

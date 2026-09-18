@@ -13,8 +13,11 @@ import com.zhu.scope.agent.AgentProviderException;
 import com.zhu.scope.agent.AgentStreamHandler;
 import com.zhu.scope.agent.AgentTimeoutException;
 import com.zhu.scope.agent.StreamingAgentHandler;
+import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.message.Msg;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
@@ -34,6 +37,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -41,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import redis.clients.jedis.JedisPooled;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
 /**
  * 内置 {@code chat} Agent：对外 {@link StreamingAgentHandler}，对内 {@link HarnessAgent}。
@@ -60,13 +65,19 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     + "当用户询问天气时，调用 agent_spawn，agent_id 为 weather-agent，task 写明城市与日期。"
                     + "当用户询问航班时，调用 agent_spawn，agent_id 为 flight-agent，task 写明出发地、目的地与日期。"
                     + "当用户要求总结、摘要或缩写一段话时，调用 agent_spawn，agent_id 为 summarizer，task 为待处理原文。"
-                    + "子 Agent 返回的是演示结果，转述给用户即可；不要自己编造天气、航班或摘要。";
+                    + "子 Agent 返回的是演示结果，转述给用户即可；不要自己编造天气、航班或摘要。"
+                    + "当用户要求写会议纪要、讨论要点或待办清单时，先查看 available_skills，调用 load_skill_through_path 加载 meeting-notes 的 SKILL.md，再按其中步骤整理。";
+
+    private static final String PLAN_PROMPT =
+            "复杂任务可先调用 plan_enter，用 plan_write 写下步骤，确认后再 plan_exit 执行。普通问答不必进入计划模式。";
 
     private final HarnessAgent agent;
 
     private final Duration callTimeout;
 
     private final AutoCloseable redisClient;
+
+    private final boolean planModeEnabled;
 
     public ScopeChatAgent(Model model) {
         this(model, DEFAULT_TIMEOUT, null, tempWorkspace());
@@ -103,7 +114,9 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 null,
                 null,
                 null,
-                null);
+                null,
+                false,
+                "plans");
     }
 
     private ScopeChatAgent(
@@ -116,12 +129,16 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             GenerateOptions generateOptions,
             Model fallbackModel,
             DistributedStore distributedStore,
-            AutoCloseable redisClient) {
+            AutoCloseable redisClient,
+            boolean planModeEnabled,
+            String planDirectory) {
         this.callTimeout = normalizeTimeout(callTimeout);
         this.redisClient = redisClient;
+        this.planModeEnabled = planModeEnabled;
+        String prompt = planModeEnabled ? SYS_PROMPT + PLAN_PROMPT : SYS_PROMPT;
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(AgentIds.CHAT)
-                .sysPrompt(SYS_PROMPT)
+                .sysPrompt(prompt)
                 .model(Objects.requireNonNull(model, "model"))
                 .toolkit(chatToolkit())
                 .compaction(compactionConfig(compactionTriggerMessages, compactionKeepMessages))
@@ -141,8 +158,14 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         } else if (stateStore != null) {
             builder.stateStore(stateStore);
         }
-        if (workspace != null && !workspace.toString().isBlank()) {
+        boolean hasWorkspace = workspace != null && !workspace.toString().isBlank();
+        if (hasWorkspace) {
             builder.workspace(workspace);
+        }
+        if (planModeEnabled && hasWorkspace) {
+            builder.enablePlanMode()
+                    .planFileDirectory(
+                            planDirectory == null || planDirectory.isBlank() ? "plans" : planDirectory);
         }
         this.agent = builder.build();
     }
@@ -166,7 +189,9 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     generateOptions(options),
                     resolveFallbackModel(id, options),
                     ChatRedis.store(jedis, options.redisKeyPrefix()),
-                    jedis);
+                    jedis,
+                    options.planModeEnabled(),
+                    options.planDirectory());
         } catch (RuntimeException ex) {
             jedis.close();
             throw ex;
@@ -284,6 +309,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             private volatile String lastDone = "";
             private volatile int inputTokens;
             private volatile int outputTokens;
+            private volatile Map<String, Object> data;
+            private volatile boolean planActive;
 
             @Override
             public void onEvent(AgentEvent event) {
@@ -296,13 +323,15 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     }
                     inputTokens = completed.inputTokens();
                     outputTokens = completed.outputTokens();
+                    data = completed.data();
+                    planActive = completed.planActive();
                 }
             }
 
             @Override
             public void onComplete() {
                 String text = lastDone.isEmpty() ? deltas.toString() : lastDone;
-                done.complete(new AgentInvokeResult(id(), text, inputTokens, outputTokens));
+                done.complete(new AgentInvokeResult(id(), text, inputTokens, outputTokens, data, planActive));
             }
 
             @Override
@@ -332,12 +361,24 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 .build();
         context.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
         EventCodec codec = new EventCodec();
-        Disposable disposable = agent.streamEvents(List.of(inbound), context)
-                .timeout(callTimeout)
-                .subscribe(
-                        asEvent -> codec.toDomain(asEvent).ifPresent(handler::onEvent),
-                        error -> handler.onError(mapStreamError(error)),
-                        handler::onComplete);
+        Disposable disposable;
+        if (request.structured()) {
+            disposable = structuredStream(inbound, context, request)
+                    .timeout(callTimeout)
+                    .subscribe(
+                            event -> codec.toStreamEvent(event)
+                                    .ifPresent(mapped -> handler.onEvent(withPlan(mapped, context))),
+                            error -> handler.onError(mapStreamError(error)),
+                            handler::onComplete);
+        } else {
+            disposable = agent.streamEvents(List.of(inbound), context)
+                    .timeout(callTimeout)
+                    .subscribe(
+                            asEvent -> codec.toDomain(asEvent)
+                                    .ifPresent(mapped -> handler.onEvent(withPlan(mapped, context))),
+                            error -> handler.onError(mapStreamError(error)),
+                            handler::onComplete);
+        }
         if (handler instanceof StreamCancelHook hook) {
             hook.bindCancel(() -> {
                 disposable.dispose();
@@ -348,6 +389,14 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 }
             });
         }
+    }
+
+    private Flux<Event> structuredStream(Msg inbound, RuntimeContext context, AgentInvokeRequest request) {
+        JsonNode schema = MessageCodec.jsonSchemaNode(request.jsonSchema());
+        if (schema != null) {
+            return agent.stream(List.of(inbound), StreamOptions.defaults(), schema, context);
+        }
+        return agent.stream(List.of(inbound), StreamOptions.defaults(), Map.class, context);
     }
 
     @Override
@@ -373,6 +422,18 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         } catch (IOException ex) {
             throw new IllegalStateException("cannot create temp workspace", ex);
         }
+    }
+
+    private AgentEvent withPlan(AgentEvent event, RuntimeContext context) {
+        if (!(event instanceof AgentEvent.Done done) || !planModeEnabled) {
+            return event;
+        }
+        return new AgentEvent.Done(
+                done.finalOutput(),
+                done.inputTokens(),
+                done.outputTokens(),
+                done.data(),
+                agent.isPlanModeActive(context));
     }
 
     private static Path blankPathToNull(Path path) {

@@ -10,6 +10,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.URLSource;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class MessageCodecTest {
@@ -37,5 +38,13 @@ class MessageCodecTest {
         assertEquals(1, images.size());
         assertInstanceOf(URLSource.class, images.getFirst().getSource());
         assertEquals("https://example.com/a.png", ((URLSource) images.getFirst().getSource()).getUrl());
+    }
+
+    @Test
+    void structuredOfReadsMap() {
+        Msg msg = org.mockito.Mockito.mock(Msg.class);
+        org.mockito.Mockito.when(msg.hasStructuredData()).thenReturn(true);
+        org.mockito.Mockito.when(msg.getStructuredData(true)).thenReturn(Map.of("city", "大阪"));
+        assertEquals("大阪", MessageCodec.structuredOf(msg).get("city"));
     }
 }

@@ -1,6 +1,7 @@
 package com.zhu.scope.web;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +36,18 @@ class WorkspaceSubagentSeedTest {
         assertTrue(flightSpec.getInlineAgentsBody().contains("演示假数据"));
         assertTrue(weatherSpec.getTools() == null || weatherSpec.getTools().isEmpty());
         assertTrue(flightSpec.getTools() == null || flightSpec.getTools().isEmpty());
+    }
+
+    @Test
+    void copiesBundledSkillMarkdownIntoWorkspace(@TempDir Path workspace) throws Exception {
+        WorkspaceSubagentSeed.copyBundled(workspace);
+
+        Path skill = workspace.resolve("skills").resolve("meeting-notes").resolve("SKILL.md");
+        assertTrue(Files.isRegularFile(skill));
+        String body = Files.readString(skill);
+        assertTrue(body.contains("name: meeting-notes"));
+        assertTrue(body.contains("会议纪要"));
+        assertFalse(body.contains("scripts/"));
     }
 
     private static SubagentDeclaration byName(List<SubagentDeclaration> loaded, String name) {

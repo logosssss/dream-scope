@@ -18,21 +18,36 @@ class ChatRedisTest {
     @Test
     void harnessOptionsDefaultsRedis() {
         ChatHarnessOptions options =
-                new ChatHarnessOptions(Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, "  ", null, null, null, null, null);
+                new ChatHarnessOptions(
+                        Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, "  ", null, null, null, null, null, null, null);
         assertEquals(ChatRedis.DEFAULT_URI, options.redisUri());
         assertEquals(ChatRedis.DEFAULT_KEY_PREFIX, options.redisKeyPrefix());
+        assertEquals(true, options.planModeEnabled());
+        assertEquals("plans", options.planDirectory());
+    }
+
+    @Test
+    void harnessOptionsPlanModeFalseKeepsOff() {
+        ChatHarnessOptions options =
+                new ChatHarnessOptions(
+                        Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, null, null, null, null, null, false, "  ");
+        assertEquals(false, options.planModeEnabled());
+        assertEquals("plans", options.planDirectory());
     }
 
     @Test
     void harnessOptionsRejectsInvalidGenerateParams() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ChatHarnessOptions(Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, 3.0, null, null, null, null));
+                () -> new ChatHarnessOptions(
+                        Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, 3.0, null, null, null, null, null, null));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ChatHarnessOptions(Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, null, 0.0, null, null, null));
+                () -> new ChatHarnessOptions(
+                        Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, null, 0.0, null, null, null, null, null));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ChatHarnessOptions(Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, null, null, 0, null, null));
+                () -> new ChatHarnessOptions(
+                        Duration.ofSeconds(1), Path.of("ws"), 0, 0, null, null, null, null, 0, null, null, null, null));
     }
 }

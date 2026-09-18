@@ -18,7 +18,9 @@ public record ChatHarnessOptions(
         Double topP,
         Integer maxTokens,
         String fallbackModelId,
-        String fallbackApiKey) {
+        String fallbackApiKey,
+        Boolean planModeEnabled,
+        String planDirectory) {
 
     public static final int DEFAULT_TRIGGER_MESSAGES = 30;
 
@@ -48,6 +50,8 @@ public record ChatHarnessOptions(
         }
         fallbackModelId = blankToNull(fallbackModelId);
         fallbackApiKey = blankToNull(fallbackApiKey);
+        planModeEnabled = planModeEnabled == null || planModeEnabled;
+        planDirectory = planDirectory == null || planDirectory.isBlank() ? "plans" : planDirectory.trim();
     }
 
     private static String blankToNull(String value) {

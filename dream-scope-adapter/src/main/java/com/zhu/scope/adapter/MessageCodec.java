@@ -7,7 +7,9 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.URLSource;
 import io.agentscope.core.message.UserMessage;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * domain 字符串 / 图片 URL ↔ AgentScope 消息。框架类型不得漏到 web / domain。
@@ -42,4 +44,38 @@ public final class MessageCodec {
         String text = msg.getTextContent();
         return text == null ? "" : text;
     }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> structuredOf(Msg msg) {
+        if (msg == null || !msg.hasStructuredData()) {
+            return null;
+        }
+        try {
+            Map<String, Object> asMap = msg.getStructuredData(true);
+            if (asMap != null && !asMap.isEmpty()) {
+                return new LinkedHashMap<>(asMap);
+            }
+        } catch (RuntimeException ignored) {
+            // 走 Class 重载
+        }
+        try {
+            Object typed = msg.getStructuredData(Map.class);
+            if (typed instanceof Map<?, ?> map && !map.isEmpty()) {
+                return new LinkedHashMap<>((Map<String, Object>) map);
+            }
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        return null;
+    }
+
+    public static com.fasterxml.jackson.databind.JsonNode jsonSchemaNode(Map<String, Object> schema) {
+        if (schema == null || schema.isEmpty()) {
+            return null;
+        }
+        return JSON.valueToTree(schema);
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 }

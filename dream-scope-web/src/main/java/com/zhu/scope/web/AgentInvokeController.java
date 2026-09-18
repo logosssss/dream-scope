@@ -47,7 +47,12 @@ public class AgentInvokeController {
         AgentHandler handler = requireHandler(request.agentId());
         AgentInvokeResult result = handler.handle(request);
         return new AgentInvokeHttpResponse(
-                result.agentId(), result.output(), result.inputTokens(), result.outputTokens());
+                result.agentId(),
+                result.output(),
+                result.inputTokens(),
+                result.outputTokens(),
+                result.data(),
+                result.planActive());
     }
 
     @PostMapping(value = "/api/agents/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -82,7 +87,13 @@ public class AgentInvokeController {
                 return new AgentInvokeRequest(null, null, null, "");
             }
             return new AgentInvokeRequest(
-                    body.agentId(), body.sessionId(), body.userId(), body.input(), body.imageUrls());
+                    body.agentId(),
+                    body.sessionId(),
+                    body.userId(),
+                    body.input(),
+                    body.imageUrls(),
+                    Boolean.TRUE.equals(body.structured()),
+                    body.jsonSchema());
         } catch (IllegalArgumentException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
         }
@@ -155,6 +166,7 @@ public class AgentInvokeController {
             case AgentEvent.TextDelta ignored -> "textDelta";
             case AgentEvent.ToolCall ignored -> "toolCall";
             case AgentEvent.ToolResult ignored -> "toolResult";
+            case AgentEvent.Hint ignored -> "hint";
             case AgentEvent.Done ignored -> "done";
             case AgentEvent.Error ignored -> "error";
         };
@@ -173,10 +185,15 @@ public class AgentInvokeController {
                 body.put("toolName", nullToEmpty(result.toolName()));
                 body.put("output", nullToEmpty(result.output()));
             }
+            case AgentEvent.Hint hint -> body.put("text", nullToEmpty(hint.text()));
             case AgentEvent.Done done -> {
                 body.put("finalOutput", nullToEmpty(done.finalOutput()));
                 body.put("inputTokens", done.inputTokens());
                 body.put("outputTokens", done.outputTokens());
+                body.put("planActive", done.planActive());
+                if (done.data() != null) {
+                    body.put("data", done.data());
+                }
             }
             case AgentEvent.Error error -> body.put("message", nullToEmpty(error.message()));
         }

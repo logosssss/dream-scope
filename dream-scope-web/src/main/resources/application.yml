@@ -22,3 +22,6 @@ dream-scope:
   compaction:
     trigger-messages: 30
     keep-messages: 10
+  plan-mode:
+    enabled: true
+    directory: plans

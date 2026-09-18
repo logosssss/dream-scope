@@ -104,12 +104,16 @@ curl http://localhost:8091/actuator/health
 |---|---|
 | `input` | 文本；与 `imageUrls` 至少一个非空，否则 `400` |
 | `imageUrls` | 可选。http/https 图片 URL 列表，最多 8 个。视觉模型（如 `dashscope:qwen-vl-plus`）才能看图 |
+| `structured` | 可选。`true` 时走 Harness 结构化输出（`stream(..., Map.class)` / JSON Schema），响应带 `data` 对象 |
+| `jsonSchema` | 可选。JSON Schema 对象；出现则视为 `structured=true` |
 | `agentId` | 可选，默认 `chat`；未知或未接线 id 返回 `404` |
 | `sessionId` / `userId` | 可选。成对传入时，会话写入 Redis（`dream-scope.redis`），同槽位可续聊 |
 
 模型超时返回 `504`，供应商/运行失败返回 `502`。
 
 chat 已注册演示工具（无 Spring）：`getCurrentTime`、`calculate`（四则运算）、`httpGet`（仅 http/https，截断响应体）。模型需要时会走 ReAct 调工具。Harness 默认的工作区 `read_file`/`write_file`/`shell` **已关闭**，避免 HTTP 进程在本机执行文件和命令。
+
+默认开启 Plan Mode：模型可自行 `plan_enter` / `plan_write` / `plan_exit`（计划文件写在工作区 `plans/`）。不提供 HTTP 手动进入，也不做人审确认；计划模式里仍然不允许 Shell。普通问答模型不进计划则行为与原来相同。`/invoke` 与 SSE `done` 带 `planActive`。
 
 chat 挂了 `LoggingMiddleware`（SLF4J，无 Spring 注解）：一次调用会打 `onAgent` / `onModelCall` / `onActing` 的 start/complete（含 `agentId`、`sessionId`、耗时）。看控制台即可，不另加日志库。
 
@@ -122,10 +126,10 @@ curl -s http://localhost:8091/api/agents/invoke \
 需已导出 `DASHSCOPE_API_KEY`。`output` 为模型回复，例如：
 
 ```json
-{"agentId":"chat","output":"你好，有什么可以帮你的？","inputTokens":0,"outputTokens":0}
+{"agentId":"chat","output":"你好，有什么可以帮你的？","inputTokens":0,"outputTokens":0,"data":null,"planActive":false}
 ```
 
-流式：`POST /api/agents/stream`，请求体与 `/invoke` 相同，响应 `text/event-stream`。每条 SSE `data` 是 JSON，`event` 为 `textDelta` / `toolCall` / `toolResult` / `done` / `error`。`done` 的 JSON 含 `finalOutput`、`inputTokens`、`outputTokens`（多次模型调用会累加）。`done` 之后连接结束。SSE 超时 = `chat-timeout` + 30s。
+流式：`POST /api/agents/stream`，请求体与 `/invoke` 相同，响应 `text/event-stream`。每条 SSE `data` 是 JSON，`event` 为 `textDelta` / `toolCall` / `toolResult` / `hint` / `done` / `error`。`done` 的 JSON 含 `finalOutput`、`inputTokens`、`outputTokens`（多次模型调用会累加）、`planActive`；结构化请求成功时还有 `data` 对象。`done` 之后连接结束。SSE 超时 = `chat-timeout` + 30s。
 
 ```bash
 curl -N http://localhost:8091/api/agents/stream \
@@ -149,9 +153,11 @@ Spring 绑定前缀 `dream-scope`；同名环境变量（relaxed binding）也�
 | `dream-scope.chat-timeout` | 同步 / 流式调用超时，默认 `120s`；SSE 连接超时为此值 + 30s |
 | `dream-scope.redis.uri` / `DREAM_SCOPE_REDIS_URI` | Redis 连接，默认 `redis://127.0.0.1:6379`。启动时 ping，连不上则进程起不来 |
 | `dream-scope.redis.key-prefix` / `DREAM_SCOPE_REDIS_KEY_PREFIX` | Redis key 前缀，默认 `dream-scope:` |
-| `dream-scope.workspace-dir` | Harness 工作区（`AGENTS.md` / `subagents/*.md` 等本地文件），默认 `.agentscope/workspace` |
+| `dream-scope.workspace-dir` | Harness 工作区（`AGENTS.md` / `subagents/*.md` / `skills/*/SKILL.md` 等本地文件），默认 `.agentscope/workspace` |
 | `dream-scope.compaction.trigger-messages` | 对话条数达到该值触发压缩，默认 `30` |
 | `dream-scope.compaction.keep-messages` | 压缩后保留最近原文条数，默认 `10` |
+| `dream-scope.plan-mode.enabled` / `DREAM_SCOPE_PLAN_MODE_ENABLED` | 是否 `enablePlanMode`，默认 `true` |
+| `dream-scope.plan-mode.directory` / `DREAM_SCOPE_PLAN_MODE_DIRECTORY` | 计划文件相对工作区目录，默认 `plans` |
 
 `DREAM_SCOPE_MODEL_KNOWLEDGE` 预留给尚未接线的 knowledge Agent。
 
@@ -198,6 +204,14 @@ curl -s http://localhost:8091/api/agents/invoke \
 ```
 
 控制台 `LoggingMiddleware` 的 `onActing` 会打出 `tools=agent_spawn`。
+
+## 技能
+
+工作区 `skills/<name>/SKILL.md` 由 Harness 自动扫描（无需 `.skillRepository`）。启动时把 classpath `workspace/skills/` 拷到 `dream-scope.workspace-dir/skills/`（覆盖同名 bundled）。模型看到 `<available_skills>` 后，用内置 `load_skill_through_path` 读正文。
+
+当前 bundled：`meeting-notes`（会议纪要，纯指令，无脚本）。HTTP 进程仍关闭文件工具和 Shell，技能里不要放 `scripts/`。
+
+自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。Git / Nacos 市场与自学习闭环本期不接。
 
 ## Roadmap
 

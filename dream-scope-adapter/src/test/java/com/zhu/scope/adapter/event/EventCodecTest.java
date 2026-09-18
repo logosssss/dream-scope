@@ -7,6 +7,7 @@ import com.zhu.scope.agent.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.AgentStartEvent;
 import io.agentscope.core.event.ExceedMaxItersEvent;
+import io.agentscope.core.event.HintBlockEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallDeltaEvent;
@@ -16,7 +17,9 @@ import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.message.Msg;
 import io.agentscope.core.model.ChatUsage;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +45,18 @@ class EventCodecTest {
         assertEquals(
                 Optional.of(new AgentEvent.Done("最终回复", 4, 7)),
                 codec.toDomain(new AgentResultEvent(new UserMessage("最终回复"))));
+    }
+
+    @Test
+    void doneCarriesStructuredMap() {
+        Msg msg = org.mockito.Mockito.mock(Msg.class);
+        org.mockito.Mockito.when(msg.getTextContent()).thenReturn("最终回复");
+        org.mockito.Mockito.when(msg.hasStructuredData()).thenReturn(true);
+        org.mockito.Mockito.when(msg.getStructuredData(true)).thenReturn(Map.of("city", "大阪"));
+        EventCodec codec = new EventCodec();
+        assertEquals(
+                Optional.of(new AgentEvent.Done("最终回复", 0, 0, Map.of("city", "大阪"))),
+                codec.toDomain(new AgentResultEvent(msg)));
     }
 
     @Test
@@ -72,5 +87,14 @@ class EventCodecTest {
                 codec.toDomain(new ExceedMaxItersEvent("r1", 10, 10)));
         assertTrue(codec.toDomain(new AgentStartEvent("s1", "r1", "chat")).isEmpty());
         assertTrue(codec.toDomain(null).isEmpty());
+    }
+
+    @Test
+    void mapsHintBlock() {
+        EventCodec codec = new EventCodec();
+        assertEquals(
+                Optional.of(new AgentEvent.Hint("请先写计划")),
+                codec.toDomain(new HintBlockEvent("r1", "b1", "plan", "请先写计划")));
+        assertTrue(codec.toDomain(new HintBlockEvent("r1", "b1", "plan", "")).isEmpty());
     }
 }

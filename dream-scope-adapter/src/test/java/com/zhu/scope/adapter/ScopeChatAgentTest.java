@@ -75,14 +75,16 @@ class ScopeChatAgentTest {
     @Test
     void generateOptionsSkippedWhenUnset() {
         ChatHarnessOptions options =
-                new ChatHarnessOptions(Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, null, null);
+                new ChatHarnessOptions(
+                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, null, null, null, null);
         assertEquals(null, ScopeChatAgent.generateOptions(options));
     }
 
     @Test
     void generateOptionsMapsConfiguredFields() {
         ChatHarnessOptions options =
-                new ChatHarnessOptions(Duration.ofSeconds(1), null, 0, 0, null, null, 0.2, 0.8, 1024, null, null);
+                new ChatHarnessOptions(
+                        Duration.ofSeconds(1), null, 0, 0, null, null, 0.2, 0.8, 1024, null, null, null, null);
         GenerateOptions mapped = ScopeChatAgent.generateOptions(options);
         assertEquals(0.2, mapped.getTemperature());
         assertEquals(0.8, mapped.getTopP());
@@ -92,7 +94,8 @@ class ScopeChatAgentTest {
     @Test
     void resolveFallbackModelSkipsBlankOrSameId() {
         ChatHarnessOptions blank =
-                new ChatHarnessOptions(Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, "  ", null);
+                new ChatHarnessOptions(
+                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, "  ", null, null, null);
         assertEquals(null, ScopeChatAgent.resolveFallbackModel("dashscope:qwen-plus", blank));
         ChatHarnessOptions same =
                 new ChatHarnessOptions(
@@ -106,7 +109,9 @@ class ScopeChatAgentTest {
                         null,
                         null,
                         "dashscope:qwen-plus",
-                        "key");
+                        "key",
+                        null,
+                        null);
         assertEquals(null, ScopeChatAgent.resolveFallbackModel("dashscope:qwen-plus", same));
         ChatHarnessOptions missingKey =
                 new ChatHarnessOptions(
@@ -120,7 +125,9 @@ class ScopeChatAgentTest {
                         null,
                         null,
                         "dashscope:qwen-turbo",
-                        "  ");
+                        "  ",
+                        null,
+                        null);
         assertThrows(
                 IllegalStateException.class,
                 () -> ScopeChatAgent.resolveFallbackModel("dashscope:qwen-plus", missingKey));

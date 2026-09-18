@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,5 +39,19 @@ class AgentInvokeRequestTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new AgentInvokeRequest(AgentIds.CHAT, "s", "u", "看图", List.of("file:///tmp/a.png")));
+    }
+
+    @Test
+    void jsonSchemaImpliesStructured() {
+        AgentInvokeRequest req = new AgentInvokeRequest(
+                AgentIds.CHAT,
+                "s",
+                "u",
+                "天气",
+                List.of(),
+                false,
+                Map.of("type", "object"));
+        assertTrue(req.structured());
+        assertEquals("object", req.jsonSchema().get("type"));
     }
 }

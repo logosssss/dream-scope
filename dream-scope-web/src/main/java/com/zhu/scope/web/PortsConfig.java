@@ -43,7 +43,9 @@ public class PortsConfig {
                 props.getModel().getTopP(),
                 props.getModel().getMaxTokens(),
                 fallbackId,
-                fallbackKey);
+                fallbackKey,
+                props.getPlanMode().isEnabled(),
+                props.getPlanMode().getDirectory());
         return ScopeChatAgent.create(modelId, apiKey, options);
     }
 

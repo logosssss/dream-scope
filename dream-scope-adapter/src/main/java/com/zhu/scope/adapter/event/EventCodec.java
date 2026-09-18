@@ -2,8 +2,10 @@ package com.zhu.scope.adapter.event;
 
 import com.zhu.scope.adapter.MessageCodec;
 import com.zhu.scope.agent.AgentEvent;
+import io.agentscope.core.agent.Event;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ExceedMaxItersEvent;
+import io.agentscope.core.event.HintBlockEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallDeltaEvent;
@@ -11,6 +13,7 @@ import io.agentscope.core.event.ToolCallEndEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
+import io.agentscope.core.message.Msg;
 import io.agentscope.core.model.ChatUsage;
 import java.util.HashMap;
 import java.util.Map;
@@ -71,18 +74,54 @@ public final class EventCodec {
             String output = take(toolOutputs, end.getToolCallId());
             return Optional.of(new AgentEvent.ToolResult(name, output));
         }
+        if (event instanceof HintBlockEvent hint) {
+            String text = hint.getHint();
+            if (text == null || text.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(new AgentEvent.Hint(text));
+        }
         if (event instanceof ModelCallEndEvent end) {
             accumulateUsage(end.getUsage());
             return Optional.empty();
         }
         if (event instanceof AgentResultEvent result) {
-            return Optional.of(new AgentEvent.Done(MessageCodec.textOf(result.getResult()), inputTokens, outputTokens));
+            Msg resultMsg = result.getResult();
+            return Optional.of(new AgentEvent.Done(
+                    MessageCodec.textOf(resultMsg),
+                    inputTokens,
+                    outputTokens,
+                    MessageCodec.structuredOf(resultMsg)));
         }
         if (event instanceof ExceedMaxItersEvent exceed) {
             return Optional.of(new AgentEvent.Error(
                     "exceeded max iterations: " + exceed.getCurrentIter() + "/" + exceed.getMaxIters()));
         }
         return Optional.empty();
+    }
+
+    public Optional<AgentEvent> toStreamEvent(Event event) {
+        if (event == null || event.getType() == null) {
+            return Optional.empty();
+        }
+        Msg msg = event.getMessage();
+        if (msg != null) {
+            accumulateUsage(msg.getChatUsage());
+        }
+        return switch (event.getType()) {
+            case REASONING -> {
+                String text = MessageCodec.textOf(msg);
+                yield text.isEmpty() ? Optional.empty() : Optional.of(new AgentEvent.TextDelta(text));
+            }
+            case TOOL_RESULT -> Optional.of(new AgentEvent.ToolResult(
+                    msg == null || msg.getName() == null ? "" : msg.getName(), MessageCodec.textOf(msg)));
+            case AGENT_RESULT -> Optional.of(new AgentEvent.Done(
+                    MessageCodec.textOf(msg),
+                    inputTokens,
+                    outputTokens,
+                    MessageCodec.structuredOf(msg)));
+            default -> Optional.empty();
+        };
     }
 
     private void accumulateUsage(ChatUsage usage) {
