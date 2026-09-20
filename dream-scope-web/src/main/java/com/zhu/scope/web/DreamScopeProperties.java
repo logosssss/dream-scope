@@ -2,18 +2,28 @@ package com.zhu.scope.web;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * 绑定 {@code dream-scope.*}；环境变量 {@code DREAM_SCOPE_MODEL_CHAT} 等经 relaxed binding 进来。
  */
+@Getter
 @ConfigurationProperties(prefix = "dream-scope")
 public class DreamScopeProperties {
 
     private final ModelSettings model = new ModelSettings();
 
+    @Setter
     private Duration chatTimeout = Duration.ofSeconds(120);
 
+    @Setter
     private Path workspaceDir = Path.of(".agentscope/workspace");
 
     private final RedisSettings redis = new RedisSettings();
@@ -22,111 +32,112 @@ public class DreamScopeProperties {
 
     private final PlanModeSettings planMode = new PlanModeSettings();
 
-    public ModelSettings getModel() {
-        return model;
+    private final McpSettings mcp = new McpSettings();
+
+    private final A2aSettings a2a = new A2aSettings();
+
+    private final RagSettings rag = new RagSettings();
+
+    @Getter
+    public static class McpSettings {
+
+        private List<McpServerSettings> servers = new ArrayList<>();
+
+        public void setServers(List<McpServerSettings> servers) {
+            this.servers = servers == null ? new ArrayList<>() : servers;
+        }
     }
 
-    public Duration getChatTimeout() {
-        return chatTimeout;
+    @Getter
+    @Setter
+    public static class McpServerSettings {
+
+        private String name;
+
+        private String transport = "streamableHttp";
+
+        private String url;
+
+        private String command;
+
+        private List<String> args = new ArrayList<>();
+
+        private Map<String, String> env = new LinkedHashMap<>();
+
+        private Map<String, String> headers = new LinkedHashMap<>();
+
+        private Duration timeout;
+
+        public void setArgs(List<String> args) {
+            this.args = args == null ? new ArrayList<>() : args;
+        }
+
+        public void setEnv(Map<String, String> env) {
+            this.env = env == null ? new LinkedHashMap<>() : env;
+        }
+
+        public void setHeaders(Map<String, String> headers) {
+            this.headers = headers == null ? new LinkedHashMap<>() : headers;
+        }
     }
 
-    public void setChatTimeout(Duration chatTimeout) {
-        this.chatTimeout = chatTimeout;
+    @Getter
+    @Setter
+    public static class RagSettings {
+
+        /**
+         * {@code auto}：有 {@code DASHSCOPE_API_KEY} 用官方 SimpleKnowledge，否则关键词。
+         * {@code simple} / {@code keyword} 强制指定。
+         */
+        private String provider = "auto";
     }
 
-    public Path getWorkspaceDir() {
-        return workspaceDir;
+    @Getter
+    @Setter
+    public static class A2aSettings {
+
+        private boolean enabled = true;
+
+        private String publicUrl = "http://127.0.0.1:8091";
+
+        private String remoteUrl;
     }
 
-    public void setWorkspaceDir(Path workspaceDir) {
-        this.workspaceDir = workspaceDir;
-    }
-
-    public RedisSettings getRedis() {
-        return redis;
-    }
-
-    public CompactionSettings getCompaction() {
-        return compaction;
-    }
-
-    public PlanModeSettings getPlanMode() {
-        return planMode;
-    }
-
+    @Getter
+    @Setter
     public static class PlanModeSettings {
 
         private boolean enabled = true;
 
         private String directory = "plans";
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public String getDirectory() {
-            return directory;
-        }
-
-        public void setDirectory(String directory) {
-            this.directory = directory;
-        }
     }
 
+    @Getter
+    @Setter
     public static class CompactionSettings {
 
         private int triggerMessages = 30;
 
         private int keepMessages = 10;
-
-        public int getTriggerMessages() {
-            return triggerMessages;
-        }
-
-        public void setTriggerMessages(int triggerMessages) {
-            this.triggerMessages = triggerMessages;
-        }
-
-        public int getKeepMessages() {
-            return keepMessages;
-        }
-
-        public void setKeepMessages(int keepMessages) {
-            this.keepMessages = keepMessages;
-        }
     }
 
+    @Getter
+    @Setter
     public static class RedisSettings {
 
         private String uri = "redis://127.0.0.1:6379";
 
         private String keyPrefix = "dream-scope:";
-
-        public String getUri() {
-            return uri;
-        }
-
-        public void setUri(String uri) {
-            this.uri = uri;
-        }
-
-        public String getKeyPrefix() {
-            return keyPrefix;
-        }
-
-        public void setKeyPrefix(String keyPrefix) {
-            this.keyPrefix = keyPrefix;
-        }
     }
 
+    @Getter
+    @Setter
     public static class ModelSettings {
 
         private String chat;
 
+        @Getter(AccessLevel.NONE)
+        @Setter(AccessLevel.NONE)
         private String defaultId;
 
         private Double temperature;
@@ -137,14 +148,6 @@ public class DreamScopeProperties {
 
         private String fallback;
 
-        public String getChat() {
-            return chat;
-        }
-
-        public void setChat(String chat) {
-            this.chat = chat;
-        }
-
         /** 绑定 {@code dream-scope.model.default} / {@code DREAM_SCOPE_MODEL_DEFAULT}。 */
         public String getDefault() {
             return defaultId;
@@ -152,39 +155,6 @@ public class DreamScopeProperties {
 
         public void setDefault(String defaultId) {
             this.defaultId = defaultId;
-        }
-
-        public Double getTemperature() {
-            return temperature;
-        }
-
-        public void setTemperature(Double temperature) {
-            this.temperature = temperature;
-        }
-
-        public Double getTopP() {
-            return topP;
-        }
-
-        public void setTopP(Double topP) {
-            this.topP = topP;
-        }
-
-        public Integer getMaxTokens() {
-            return maxTokens;
-        }
-
-        public void setMaxTokens(Integer maxTokens) {
-            this.maxTokens = maxTokens;
-        }
-
-        /** 绑定 {@code dream-scope.model.fallback} / {@code DREAM_SCOPE_MODEL_FALLBACK}。 */
-        public String getFallback() {
-            return fallback;
-        }
-
-        public void setFallback(String fallback) {
-            this.fallback = fallback;
         }
     }
 }

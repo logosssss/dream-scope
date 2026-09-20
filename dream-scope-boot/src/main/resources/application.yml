@@ -1,0 +1,76 @@
+server:
+  port: 8092
+
+spring:
+  application:
+    name: dream-scope-boot
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+dream-scope:
+  chat-timeout: 120s
+
+# 官方 starters。厂商只按 agentscope.model.provider 启用一个 Model。
+# Nacos prompt 的 ReAct 装配 matchIfMissing=true，必须显式关掉，否则没 Nacos 起不来。
+agentscope:
+  agent:
+    enabled: true
+    name: chat
+    sys-prompt: 你是一个有帮助的助手。
+    max-iters: 10
+  model:
+    provider: dashscope
+  dashscope:
+    enabled: true
+    api-key: ${DASHSCOPE_API_KEY:}
+    model-name: qwen-plus
+    stream: true
+  openai:
+    enabled: true
+    api-key: ${OPENAI_API_KEY:}
+    model-name: gpt-4.1-mini
+    stream: true
+  anthropic:
+    enabled: true
+    api-key: ${ANTHROPIC_API_KEY:}
+    model-name: claude-sonnet-4.5
+    stream: true
+  gemini:
+    enabled: true
+    api-key: ${GEMINI_API_KEY:}
+    model-name: gemini-2.0-flash
+    stream: true
+  ollama:
+    enabled: true
+    model-name: llama3
+    base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
+  chat-completions:
+    enabled: true
+    base-path: /v1/chat/completions
+  agui:
+    path-prefix: /agui
+    default-agent-id: agentscopeReActAgent
+    cors-enabled: true
+  admin:
+    enabled: true
+    write-enabled: false
+    base-path: /v1/admin
+  a2a:
+    server:
+      enabled: true
+      card:
+        name: dream-scope-boot
+        description: AgentScope official starter 对照入口
+        url: http://127.0.0.1:8092
+    nacos:
+      enabled: false
+  nacos:
+    server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+    username: ${NACOS_USERNAME:}
+    password: ${NACOS_PASSWORD:}
+    prompt:
+      enabled: false

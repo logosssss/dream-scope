@@ -1,0 +1,15 @@
+package com.zhu.scope.boot;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+/**
+ * 官方 AgentScope starter 入口。扫描仅限本包，避免和 {@code dream-scope-web} 的 PortsConfig 叠在同一进程。
+ */
+@SpringBootApplication(scanBasePackages = "com.zhu.scope.boot")
+public class DreamScopeBootApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(DreamScopeBootApplication.class, args);
+    }
+}

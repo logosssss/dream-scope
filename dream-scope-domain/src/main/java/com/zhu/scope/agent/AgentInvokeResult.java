@@ -39,7 +39,7 @@ public record AgentInvokeResult(
         data = copyData(data);
     }
 
-    static Map<String, Object> copyData(Map<String, Object> data) {
+    public static Map<String, Object> copyData(Map<String, Object> data) {
         if (data == null || data.isEmpty()) {
             return null;
         }

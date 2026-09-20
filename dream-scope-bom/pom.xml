@@ -46,6 +46,11 @@
                 <artifactId>dream-scope-adapter</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.zhu</groupId>
+                <artifactId>dream-scope-boot</artifactId>
+                <version>${project.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 </project>

@@ -9,6 +9,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.zhu.scope.adapter.middleware.LoggingMiddleware;
+import io.agentscope.core.tracing.OtelTracingMiddleware;
 import com.zhu.scope.adapter.subagent.ChatSubagents;
 import com.zhu.scope.agent.AgentEvent;
 import com.zhu.scope.agent.AgentIds;
@@ -53,9 +54,10 @@ class ScopeChatAgentTest {
     }
 
     @Test
-    void chatMiddlewaresRegistersLoggingMiddleware() {
-        assertEquals(1, ScopeChatAgent.chatMiddlewares().size());
-        assertInstanceOf(LoggingMiddleware.class, ScopeChatAgent.chatMiddlewares().getFirst());
+    void chatMiddlewaresRegistersOtelThenLogging() {
+        assertEquals(2, ScopeChatAgent.chatMiddlewares().size());
+        assertInstanceOf(OtelTracingMiddleware.class, ScopeChatAgent.chatMiddlewares().getFirst());
+        assertInstanceOf(LoggingMiddleware.class, ScopeChatAgent.chatMiddlewares().get(1));
     }
 
     @Test

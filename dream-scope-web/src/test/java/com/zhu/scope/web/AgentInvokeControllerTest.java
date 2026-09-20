@@ -21,7 +21,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest
+@SpringBootTest(properties = "dream-scope.rag.provider=keyword")
 @AutoConfigureMockMvc
 class AgentInvokeControllerTest {
 
@@ -131,6 +131,17 @@ class AgentInvokeControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"input\":\"  \"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void knowledgeInvokeReturnsSeededCitation() throws Exception {
+        mockMvc.perform(post("/api/agents/invoke")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"agentId\":\"knowledge\",\"input\":\"dream-scope\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.agentId").value("knowledge"))
+                .andExpect(jsonPath("$.output").value(org.hamcrest.Matchers.containsString("[1]")))
+                .andExpect(jsonPath("$.output").value(org.hamcrest.Matchers.containsString("dream-scope")));
     }
 
     @Test

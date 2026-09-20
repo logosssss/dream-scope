@@ -9,7 +9,18 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include:
+          - health
+          - info
+          - metrics
+          - prometheus
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 dream-scope:
   model:
@@ -25,3 +36,10 @@ dream-scope:
   plan-mode:
     enabled: true
     directory: plans
+  mcp:
+    servers: []
+  a2a:
+    enabled: true
+    public-url: http://127.0.0.1:8091
+  rag:
+    provider: auto

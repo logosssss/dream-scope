@@ -97,4 +97,17 @@ class EventCodecTest {
                 codec.toDomain(new HintBlockEvent("r1", "b1", "plan", "请先写计划")));
         assertTrue(codec.toDomain(new HintBlockEvent("r1", "b1", "plan", "")).isEmpty());
     }
+
+    @Test
+    void toDoneUsesMsgUsageAndStructuredMap() {
+        Msg msg = org.mockito.Mockito.mock(Msg.class);
+        org.mockito.Mockito.when(msg.getTextContent()).thenReturn("最终回复");
+        org.mockito.Mockito.when(msg.getChatUsage()).thenReturn(new ChatUsage(2, 3, 0));
+        org.mockito.Mockito.when(msg.hasStructuredData()).thenReturn(true);
+        org.mockito.Mockito.when(msg.getStructuredData(true)).thenReturn(Map.of("city", "大阪"));
+        EventCodec codec = new EventCodec();
+        assertEquals(
+                new AgentEvent.Done("最终回复", 2, 3, Map.of("city", "大阪")),
+                codec.toDone(msg));
+    }
 }

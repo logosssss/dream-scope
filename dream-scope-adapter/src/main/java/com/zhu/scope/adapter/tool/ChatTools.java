@@ -1,5 +1,7 @@
 package com.zhu.scope.adapter.tool;
 
+import com.zhu.scope.knowledge.RetrieveCitations;
+import com.zhu.scope.knowledge.RetrievePort;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import java.net.URI;
@@ -19,17 +21,36 @@ public final class ChatTools {
 
     static final int HARD_MAX_CHARS = 8000;
 
+    static final int DEFAULT_TOP_K = 3;
+
+    static final int HARD_MAX_TOP_K = 8;
+
     private final HttpClient http;
 
+    private final RetrievePort retrievePort;
+
     public ChatTools() {
-        this(HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build());
+        this(defaultHttp(), null);
+    }
+
+    public ChatTools(RetrievePort retrievePort) {
+        this(defaultHttp(), retrievePort);
     }
 
     ChatTools(HttpClient http) {
+        this(http, null);
+    }
+
+    private ChatTools(HttpClient http, RetrievePort retrievePort) {
         this.http = http;
+        this.retrievePort = retrievePort;
+    }
+
+    private static HttpClient defaultHttp() {
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
     }
 
     @Tool(name = "getCurrentTime", description = "返回服务器当前日期时间（含时区偏移）")
@@ -87,6 +108,20 @@ public final class ChatTools {
         } catch (Exception ex) {
             return "请求失败: " + ex.getMessage();
         }
+    }
+
+    @Tool(name = "retrieve", description = "从知识库检索带编号的参考资料。回答产品、架构或调用方式时先调用，再按 [1][2] 引用")
+    public String retrieve(
+            @ToolParam(name = "query", description = "检索问句，尽量包含专有名词", required = true)
+            String query,
+            @ToolParam(name = "topK", description = "返回条数，默认 3，上限 8", required = false)
+            Integer topK) {
+        if (retrievePort == null) {
+            return "知识库未配置";
+        }
+        int limit = topK == null || topK <= 0 ? DEFAULT_TOP_K : Math.min(topK, HARD_MAX_TOP_K);
+        String formatted = RetrieveCitations.format(retrievePort.retrieve(query, limit));
+        return formatted.isEmpty() ? "未检索到相关资料" : formatted;
     }
 
     /** 递归下降：expr = term {(+|-) term}；term = unary {(*|/) unary}；unary = - unary | primary */

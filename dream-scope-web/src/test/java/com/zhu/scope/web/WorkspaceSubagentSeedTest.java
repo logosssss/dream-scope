@@ -50,6 +50,72 @@ class WorkspaceSubagentSeedTest {
         assertFalse(body.contains("scripts/"));
     }
 
+    @Test
+    void copiesBundledToolsJsonAndWritesHttpMcp(@TempDir Path workspace) throws Exception {
+        WorkspaceSubagentSeed.copyBundled(workspace);
+        Path tools = workspace.resolve("tools.json");
+        assertTrue(Files.isRegularFile(tools));
+        assertTrue(Files.readString(tools).contains("mcpServers"));
+
+        DreamScopeProperties.McpServerSettings server = new DreamScopeProperties.McpServerSettings();
+        server.setName("weather");
+        server.setTransport("streamableHttp");
+        server.setUrl("https://example.com/mcp");
+        WorkspaceSubagentSeed.applyMcpServers(workspace, List.of(server));
+        String written = Files.readString(tools);
+        assertTrue(written.contains("\"weather\""));
+        assertTrue(written.contains("streamableHttp"));
+        assertTrue(written.contains("https://example.com/mcp"));
+    }
+
+    @Test
+    void copiesAgentsAndKnowledgeMarkdown(@TempDir Path workspace) throws Exception {
+        WorkspaceSubagentSeed.copyBundled(workspace);
+
+        Path agents = workspace.resolve("AGENTS.md");
+        Path knowledge = workspace.resolve("knowledge").resolve("KNOWLEDGE.md");
+        assertTrue(Files.isRegularFile(agents));
+        assertTrue(Files.isRegularFile(knowledge));
+        String persona = Files.readString(agents);
+        assertTrue(persona.contains("# dream-scope chat"));
+        assertTrue(persona.contains("## 行为"));
+        String facts = Files.readString(knowledge);
+        assertTrue(facts.contains("/api/agents/invoke"));
+        assertTrue(facts.contains("sessionId"));
+    }
+
+    @Test
+    void seedsMemoryMarkdownOnlyWhenMissing(@TempDir Path workspace) throws Exception {
+        Path memory = workspace.resolve("MEMORY.md");
+        Files.createDirectories(workspace);
+        Files.writeString(memory, "# keep-me\n");
+
+        WorkspaceSubagentSeed.copyBundled(workspace);
+
+        assertTrue(Files.readString(memory).contains("keep-me"));
+        assertTrue(Files.isDirectory(workspace.resolve("memory")));
+    }
+
+    @Test
+    void copiesMemoryTemplateWhenAbsent(@TempDir Path workspace) throws Exception {
+        WorkspaceSubagentSeed.copyBundled(workspace);
+        Path memory = workspace.resolve("MEMORY.md");
+        assertTrue(Files.isRegularFile(memory));
+        assertTrue(Files.readString(memory).contains("长期记忆"));
+        assertTrue(Files.isDirectory(workspace.resolve("memory")));
+    }
+
+    @Test
+    void rejectsStdioMcp(@TempDir Path workspace) {
+        DreamScopeProperties.McpServerSettings server = new DreamScopeProperties.McpServerSettings();
+        server.setName("local");
+        server.setTransport("stdio");
+        server.setUrl("https://example.com/mcp");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> WorkspaceSubagentSeed.applyMcpServers(workspace, List.of(server)));
+    }
+
     private static SubagentDeclaration byName(List<SubagentDeclaration> loaded, String name) {
         return loaded.stream().filter(item -> name.equals(item.getName())).findFirst().orElse(null);
     }

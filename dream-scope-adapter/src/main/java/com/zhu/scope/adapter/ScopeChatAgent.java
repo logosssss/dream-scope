@@ -2,7 +2,11 @@ package com.zhu.scope.adapter;
 
 import com.zhu.scope.adapter.event.EventCodec;
 import com.zhu.scope.adapter.event.StreamCancelHook;
+import com.zhu.scope.adapter.middleware.ChatOtel;
 import com.zhu.scope.adapter.middleware.LoggingMiddleware;
+import io.agentscope.core.tracing.OtelTracingMiddleware;
+import com.zhu.scope.adapter.mcp.ChatMcp;
+import com.zhu.scope.adapter.mcp.ChatMcpServer;
 import com.zhu.scope.adapter.subagent.ChatSubagents;
 import com.zhu.scope.adapter.tool.ChatTools;
 import com.zhu.scope.agent.AgentEvent;
@@ -13,9 +17,8 @@ import com.zhu.scope.agent.AgentProviderException;
 import com.zhu.scope.agent.AgentStreamHandler;
 import com.zhu.scope.agent.AgentTimeoutException;
 import com.zhu.scope.agent.StreamingAgentHandler;
-import io.agentscope.core.agent.Event;
+import com.zhu.scope.knowledge.RetrievePort;
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.message.Msg;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.agentscope.core.middleware.MiddlewareBase;
@@ -25,6 +28,7 @@ import io.agentscope.core.model.ModelCreationContext;
 import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.harness.agent.DistributedStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.memory.MemoryConfig;
@@ -45,29 +49,73 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import redis.clients.jedis.JedisPooled;
 import reactor.core.Disposable;
-import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
- * 内置 {@code chat} Agent：对外 {@link StreamingAgentHandler}，对内 {@link HarnessAgent}。
+ * 内置 {@code chat} Agent：对外是 domain {@link StreamingAgentHandler}，对内是 AgentScope {@link HarnessAgent}。
  *
- * <p>不依赖 Spring。模型 / Key / 超时 / 工作区 / 压缩阈值 / Redis 由 web 组合根注入 {@link #create}。
- * 生产用 {@code RedisDistributedStore}（必选）。HTTP 进程关掉 Harness 默认的工作区文件工具和 Shell，只保留 {@link ChatTools} 与 {@code agent_spawn}。
- * Middleware 挂点在 {@link #chatMiddlewares()}。
+ * <p>无 Spring。web {@code PortsConfig} / boot 组合根调用 {@link #create} 注入模型、Redis、workspace、压缩、Plan Mode、
+ * {@link RetrievePort}。本类是 adapter 里框架类型的集中点，web / domain 只看到 {@link AgentInvokeRequest} /
+ * {@link AgentEvent} / {@link AgentInvokeResult}。
+ *
+ * <h2>两条构造路径</h2>
+ *
+ * <ul>
+ *   <li>{@link #create}：生产。{@link ChatRedis#open} ping 失败则进程起不来；会话走
+ *       {@code RedisDistributedStore}，不用 JSON 文件 store。
+ *   <li>公开构造函数：单测。可注入 {@link AgentStateStore}，workspace 默认临时目录，不连 Redis。
+ * </ul>
+ *
+ * <h2>{@link HarnessAgent.Builder} 本仓库怎么填</h2>
+ *
+ * <pre>
+ * .name                     AgentIds.CHAT（"chat"）
+ * .sysPrompt                SYS_PROMPT，Plan Mode 开启时再拼 PLAN_PROMPT
+ * .model / .fallbackModel   ModelRegistry；fallback 与主模型 id 相同则不加
+ * .generateOptions          temperature / topP / maxTokens 全空则不调
+ * .toolkit                  ChatTools + 可选 MCP（McpClientBuilder.registerMcpClient）+ Harness agent_spawn
+ * .disableFilesystemTools   关掉 read_file / write_file 等默认工作区文件工具
+ * .disableShellTool         HTTP 进程禁止 shell
+ * .compaction / .memory     条数阈值 + MemoryConfig.defaults()
+ * .subagents                ChatSubagents.programmatic()；md 子 Agent 另由 workspace 扫描
+ * .middlewares              OtelTracingMiddleware + LoggingMiddleware
+ * .distributedStore         生产 Redis；与 .stateStore 互斥（有 Redis 就不走文件 store）
+ * .workspace                本地目录：AGENTS.md / knowledge / MEMORY.md / skills / subagents / tools.json
+ * .enablePlanMode           仅 planModeEnabled 且 workspace 非空时打开
+ * </pre>
+ *
+ * <h2>一次调用</h2>
+ *
+ * <p>{@link #handle} 不是另一条裸 {@code agent.call()}。普通请求订阅 {@link #streamHandle} 的 {@code streamEvents}，拼
+ * {@code TextDelta}，优先用 {@link AgentEvent.Done#finalOutput()}。{@code structured=true} 走 {@code call(..., schema|Class)}
+ * （2.0.3 的 {@code streamEvents} 没有 schema 重载；旧 {@code stream()} 已 forRemoval），再编成一条 {@link AgentEvent.Done}。
+ *
+ * <p>会话：{@code userId} 与 {@code sessionId} <em>成对非空</em> 才写入 Redis 槽位；只传一个等于无会话。
  */
 public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseable {
 
+    /** yml / 环境都没配模型时的兜底，对应 {@code DASHSCOPE_API_KEY}。 */
     static final String DEFAULT_MODEL_ID = "dashscope:qwen-plus";
 
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
+    /**
+     * 主系统提示：演示工具 + 子 Agent 路由 + Skill + RAG + MCP。
+     *
+     * <p>天气 / 航班 / 摘要必须 {@code agent_spawn}，禁止模型自己编。产品问答走 {@code retrieve}。MCP 工具名以
+     * {@code mcp__} 开头，有才用（{@link ChatMcp} / {@code McpClientBuilder} 注册）。
+     */
     private static final String SYS_PROMPT =
             "你是一个有帮助的助手。需要当前时间、四则运算或抓取网页时，调用 getCurrentTime / calculate / httpGet。"
                     + "当用户询问天气时，调用 agent_spawn，agent_id 为 weather-agent，task 写明城市与日期。"
                     + "当用户询问航班时，调用 agent_spawn，agent_id 为 flight-agent，task 写明出发地、目的地与日期。"
                     + "当用户要求总结、摘要或缩写一段话时，调用 agent_spawn，agent_id 为 summarizer，task 为待处理原文。"
                     + "子 Agent 返回的是演示结果，转述给用户即可；不要自己编造天气、航班或摘要。"
-                    + "当用户要求写会议纪要、讨论要点或待办清单时，先查看 available_skills，调用 load_skill_through_path 加载 meeting-notes 的 SKILL.md，再按其中步骤整理。";
+                    + "当用户要求写会议纪要、讨论要点或待办清单时，先查看 available_skills，调用 load_skill_through_path 加载 meeting-notes 的 SKILL.md，再按其中步骤整理。"
+                    + "回答与 dream-scope 产品、架构或调用方式有关的问题时，先调用 retrieve，按返回的 [1][2] 引用，不要编造。"
+                    + "若工具表出现 mcp__ 开头的工具，按需调用。";
 
+    /** 拼在 SYS_PROMPT 后；未开 Plan Mode 不加，避免模型无工具还尝试 {@code plan_enter}。 */
     private static final String PLAN_PROMPT =
             "复杂任务可先调用 plan_enter，用 plan_write 写下步骤，确认后再 plan_exit 执行。普通问答不必进入计划模式。";
 
@@ -75,14 +123,20 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
 
     private final Duration callTimeout;
 
+    /** 生产是 {@link JedisPooled}；单测构造为 null。{@link #close} 在 agent 之后关。 */
     private final AutoCloseable redisClient;
+
+    /** 生产 MCP 连接；单测为空。{@link #close} 在 Harness 之后、Redis 之前关。 */
+    private final List<McpClientWrapper> mcpClients;
 
     private final boolean planModeEnabled;
 
+    /** 单测：默认超时、临时 workspace、无 Redis。 */
     public ScopeChatAgent(Model model) {
         this(model, DEFAULT_TIMEOUT, null, tempWorkspace());
     }
 
+    /** 单测：可注入 {@link AgentStateStore}（文件会话），仍不连 Redis。 */
     public ScopeChatAgent(Model model, Duration callTimeout, AgentStateStore stateStore) {
         this(model, callTimeout, stateStore, tempWorkspace());
     }
@@ -116,9 +170,17 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 null,
                 null,
                 false,
-                "plans");
+                "plans",
+                null,
+                List.of());
     }
 
+    /**
+     * 真正 {@code HarnessAgent.builder().build()} 的入口。公开构造与 {@link #create} 都汇到这里。
+     *
+     * <p>{@code distributedStore} 与 {@code stateStore} 二选一：生产传 Redis；测试传文件 store。两者都空则框架用内存态，
+     * 进程重启会话丢失。Plan Mode 依赖 workspace 落盘，没有工作区就不开。
+     */
     private ScopeChatAgent(
             Model model,
             Duration callTimeout,
@@ -131,16 +193,20 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             DistributedStore distributedStore,
             AutoCloseable redisClient,
             boolean planModeEnabled,
-            String planDirectory) {
+            String planDirectory,
+            RetrievePort retrievePort,
+            List<McpClientWrapper> mcpClients) {
+        ChatOtel.install();
         this.callTimeout = normalizeTimeout(callTimeout);
         this.redisClient = redisClient;
         this.planModeEnabled = planModeEnabled;
+        this.mcpClients = mcpClients == null || mcpClients.isEmpty() ? List.of() : List.copyOf(mcpClients);
         String prompt = planModeEnabled ? SYS_PROMPT + PLAN_PROMPT : SYS_PROMPT;
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(AgentIds.CHAT)
                 .sysPrompt(prompt)
                 .model(Objects.requireNonNull(model, "model"))
-                .toolkit(chatToolkit())
+                .toolkit(chatToolkit(retrievePort, this.mcpClients))
                 .compaction(compactionConfig(compactionTriggerMessages, compactionKeepMessages))
                 .memory(MemoryConfig.defaults())
                 .subagents(chatSubagents())
@@ -162,6 +228,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         if (hasWorkspace) {
             builder.workspace(workspace);
         }
+        //Plan Mode
         if (planModeEnabled && hasWorkspace) {
             builder.enablePlanMode()
                     .planFileDirectory(
@@ -171,12 +238,39 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     }
 
     /**
-     * 生产装配：模型 + Redis DistributedStore + workspace + 压缩/记忆。
+     * 生产装配（无检索）：模型 + Redis DistributedStore + workspace + 压缩/记忆。
+     *
+     * @see #create(String, String, ChatHarnessOptions, RetrievePort)
      */
     public static ScopeChatAgent create(String modelId, String apiKey, ChatHarnessOptions options) {
+        return create(modelId, apiKey, options, null);
+    }
+
+    /**
+     * 生产装配。先 {@link ChatRedis#open}（含 ping），build 失败必须关掉 Jedis，避免连接泄漏。
+     *
+     * @param retrievePort 可空；非空时 {@link ChatTools} 注册 {@code retrieve}
+     */
+    public static ScopeChatAgent create(
+            String modelId, String apiKey, ChatHarnessOptions options, RetrievePort retrievePort) {
+        return create(modelId, apiKey, options, retrievePort, List.of());
+    }
+
+    /**
+     * 生产装配。MCP 走官方 {@link ChatMcp}（{@code McpClientBuilder} + {@code Toolkit.registerMcpClient}），
+     * 不写进 workspace {@code tools.json}，避免 Harness 再连一次。
+     */
+    public static ScopeChatAgent create(
+            String modelId,
+            String apiKey,
+            ChatHarnessOptions options,
+            RetrievePort retrievePort,
+            List<ChatMcpServer> mcpServers) {
         Objects.requireNonNull(options, "options");
         JedisPooled jedis = ChatRedis.open(options.redisUri());
+        List<McpClientWrapper> mcpClients = List.of();
         try {
+            mcpClients = ChatMcp.openAll(mcpServers);
             String id = resolveModelId(modelId, null);
             Model model = resolveModel(id, apiKey);
             return new ScopeChatAgent(
@@ -191,19 +285,27 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     ChatRedis.store(jedis, options.redisKeyPrefix()),
                     jedis,
                     options.planModeEnabled(),
-                    options.planDirectory());
+                    options.planDirectory(),
+                    retrievePort,
+                    mcpClients);
         } catch (RuntimeException ex) {
+            ChatMcp.closeQuietly(mcpClients);
             jedis.close();
             throw ex;
         }
     }
 
+    /** {@code provider:model} → {@link ModelRegistry}。apiKey 由调用方按 {@link #apiKeyProperty} 从环境读取。 */
     static Model resolveModel(String modelId, String apiKey) {
         String id = resolveModelId(modelId, null);
         ModelCreationContext context = ModelCreationContext.builder().apiKey(apiKey).build();
         return ModelRegistry.resolve(id, context);
     }
 
+    /**
+     * 主模型失败时的第二个 {@link Model}。id 与主模型相同则不加（没意义）；配了 fallback 却没有 Key 直接失败，
+     * 避免运行时才发现。
+     */
     static Model resolveFallbackModel(String primaryId, ChatHarnessOptions options) {
         if (options == null || options.fallbackModelId() == null) {
             return null;
@@ -219,6 +321,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return resolveModel(fallbackId, key);
     }
 
+    /** 三个采样参数都空 → 不调 {@code generateOptions}，沿用模型默认。 */
     static GenerateOptions generateOptions(ChatHarnessOptions options) {
         if (options == null) {
             return null;
@@ -239,6 +342,10 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return builder.build();
     }
 
+    /**
+     * 按消息条数压缩。{@code keepTokens(0)} 关掉 token 阈值，避免和条数阈值缠在一起。
+     * {@code trigger}/{@code keep} ≤0 时回落到 {@link ChatHarnessOptions} 默认 30 / 10。
+     */
     static CompactionConfig compactionConfig(int triggerMessages, int keepMessages) {
         int trigger = triggerMessages > 0 ? triggerMessages : ChatHarnessOptions.DEFAULT_TRIGGER_MESSAGES;
         int keep = keepMessages > 0 ? keepMessages : ChatHarnessOptions.DEFAULT_KEEP_MESSAGES;
@@ -250,25 +357,43 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     }
 
     static Toolkit chatToolkit() {
+        return chatToolkit(null);
+    }
+
+    /**
+     * 注册 {@link ChatTools}，再按官方路径挂 MCP。Harness 还会注入 {@code agent_spawn}；文件/shell 已 disable。
+     * {@code retrievePort == null} 时 {@code retrieve} 工具会拒绝调用，而不是从工具表消失（见 ChatTools）。
+     */
+    static Toolkit chatToolkit(RetrievePort retrievePort) {
+        return chatToolkit(retrievePort, List.of());
+    }
+
+    static Toolkit chatToolkit(RetrievePort retrievePort, List<McpClientWrapper> mcpClients) {
         Toolkit toolkit = new Toolkit();
-        toolkit.registerTool(new ChatTools());
+        toolkit.registerTool(new ChatTools(retrievePort));
+        ChatMcp.register(toolkit, mcpClients);
         return toolkit;
     }
 
     /**
-     * 编程式子 Agent。Markdown 声明仍由 Harness 扫描 workspace {@code subagents/*.md}，两路合并。
+     * 编程式子 Agent。Markdown 声明仍由 Harness 扫描 workspace {@code subagents/*.md}，{@code build()} 时两路合并。
+     * 不要给同一个 {@code agent_id} 写两种声明。
      */
     static List<SubagentDeclaration> chatSubagents() {
         return ChatSubagents.programmatic();
     }
 
     /**
-     * chat 横切挂点。当前挂 {@link LoggingMiddleware}；不要把 Middleware 类型漏到 web / domain。
+     * chat 横切：手册 {@link OtelTracingMiddleware}（读 GlobalOpenTelemetry）+ 本仓库 {@link LoggingMiddleware}。
+     * Middleware 类型不得漏到 web / domain。
      */
     static List<MiddlewareBase> chatMiddlewares() {
-        return List.of(new LoggingMiddleware());
+        return List.of(new OtelTracingMiddleware(), new LoggingMiddleware());
     }
 
+    /**
+     * {@code dream-scope.model.chat} 优先，否则 {@code model.default}，再否则 {@link #DEFAULT_MODEL_ID}。
+     */
     public static String resolveModelId(String chat, String fallback) {
         if (chat != null && !chat.isBlank()) {
             return chat.trim();
@@ -279,6 +404,9 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return DEFAULT_MODEL_ID;
     }
 
+    /**
+     * 模型 id 前缀 → 环境变量名。Key <em>不</em>走 {@code dream-scope.*}，进程也不会自动加载 {@code .env}。
+     */
     public static String apiKeyProperty(String modelId) {
         String id = modelId == null ? "" : modelId.trim().toLowerCase(Locale.ROOT);
         if (id.startsWith("deepseek:")) {
@@ -301,6 +429,12 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return AgentIds.CHAT;
     }
 
+    /**
+     * 同步 {@code POST /api/agents/invoke}。内部仍走 {@link #streamHandle}，等到 {@code onComplete} 再返回。
+     *
+     * <p>等待上限是 {@code callTimeout + 5s}：流上已有 {@code .timeout(callTimeout)}，这里多留一点给收尾的 {@code Done}。
+     * 优先 {@link AgentEvent.Done} 的正文 / token / structured / planActive；没有 Done 才用拼起来的 TextDelta。
+     */
     @Override
     public AgentInvokeResult handle(AgentInvokeRequest request) {
         CompletableFuture<AgentInvokeResult> done = new CompletableFuture<>();
@@ -351,6 +485,13 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         }
     }
 
+    /**
+     * SSE {@code POST /api/agents/stream} 的主路径。每条订阅 {@code new EventCodec()}，不要复用。
+     *
+     * <p>{@link AgentSpawnTool#CTX_FORCE_SYNC}：子 Agent 同步跑完再继续主循环，避免 HTTP 超时后后台还在 spawn。
+     *
+     * <p>handler 若实现 {@link StreamCancelHook}（SSE 桥），把 {@code dispose + interrupt} 绑上去；测试桩不实现则跳过。
+     */
     @Override
     public void streamHandle(AgentInvokeRequest request, AgentStreamHandler handler) {
         Objects.requireNonNull(handler, "handler");
@@ -363,11 +504,10 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         EventCodec codec = new EventCodec();
         Disposable disposable;
         if (request.structured()) {
-            disposable = structuredStream(inbound, context, request)
+            disposable = structuredCall(inbound, context, request)
                     .timeout(callTimeout)
                     .subscribe(
-                            event -> codec.toStreamEvent(event)
-                                    .ifPresent(mapped -> handler.onEvent(withPlan(mapped, context))),
+                            msg -> handler.onEvent(withPlan(codec.toDone(msg), context)),
                             error -> handler.onError(mapStreamError(error)),
                             handler::onComplete);
         } else {
@@ -391,19 +531,26 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         }
     }
 
-    private Flux<Event> structuredStream(Msg inbound, RuntimeContext context, AgentInvokeRequest request) {
+    /**
+     * 结构化输出：2.0.3 只有 {@code call(List, JsonNode|Class, RuntimeContext)} 能带 schema。
+     * {@code streamEvents} 无此重载；{@code stream()} 自 2.0.0 forRemoval。有 JSON Schema 用 schema，否则 {@code Map.class}。
+     */
+    private Mono<Msg> structuredCall(Msg inbound, RuntimeContext context, AgentInvokeRequest request) {
+        List<Msg> messages = List.of(inbound);
         JsonNode schema = MessageCodec.jsonSchemaNode(request.jsonSchema());
         if (schema != null) {
-            return agent.stream(List.of(inbound), StreamOptions.defaults(), schema, context);
+            return agent.call(messages, schema, context);
         }
-        return agent.stream(List.of(inbound), StreamOptions.defaults(), Map.class, context);
+        return agent.call(messages, Map.class, context);
     }
 
+    /** 先关 Harness，再关 MCP 连接/子进程，最后关 Jedis。 */
     @Override
     public void close() {
         try {
             agent.close();
         } finally {
+            ChatMcp.closeQuietly(mcpClients);
             if (redisClient != null) {
                 try {
                     redisClient.close();
@@ -414,6 +561,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         }
     }
 
+    /** 单测无配置 workspace 时用；{@code deleteOnExit} 不保证立刻删掉，只避免磁盘常驻。 */
     private static Path tempWorkspace() {
         try {
             Path dir = Files.createTempDirectory("dream-scope-ws-");
@@ -424,6 +572,9 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         }
     }
 
+    /**
+     * {@link EventCodec} 不知道 Plan Mode。只在 {@link AgentEvent.Done} 上补 {@code planActive}，其它事件原样转发。
+     */
     private AgentEvent withPlan(AgentEvent event, RuntimeContext context) {
         if (!(event instanceof AgentEvent.Done done) || !planModeEnabled) {
             return event;
@@ -450,6 +601,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return timeout;
     }
 
+    /** 流错误收成 domain 异常：已是 {@link AgentTimeoutException} / {@link AgentProviderException} 则原样，超时链再包一层。 */
     private RuntimeException mapStreamError(Throwable error) {
         if (error instanceof AgentTimeoutException timeout) {
             return timeout;
@@ -463,6 +615,10 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return new AgentProviderException("chat model call failed", error);
     }
 
+    /**
+     * Reactor {@code .timeout()} 可能是 {@link TimeoutException}，也可能是阻塞读上的 {@link IllegalStateException}。
+     * 沿 cause 链找，避免被包一层后当成普通 502。
+     */
     private static boolean isTimeout(Throwable error) {
         for (Throwable current = error; current != null; current = current.getCause()) {
             if (current instanceof TimeoutException) {
@@ -478,6 +634,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         return false;
     }
 
+    /** 空白当没传。会话槽位要求 userId、sessionId 都非空，单边空白必须变成 null 交给框架。 */
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
     }

@@ -9,7 +9,7 @@
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>dream-scope</name>
-    <description>AgentScope 2.0 模块化单体：domain / adapter / knowledge / web</description>
+    <description>AgentScope 2.0 模块化单体：domain / adapter / knowledge / web / boot</description>
     <url>https://github.com/logosssss/dream-scope</url>
 
     <licenses>
@@ -31,6 +31,7 @@
         <module>dream-scope-knowledge</module>
         <module>dream-scope-adapter</module>
         <module>dream-scope-web</module>
+        <module>dream-scope-boot</module>
     </modules>
 
     <properties>
@@ -75,8 +76,21 @@
                 <artifactId>dream-scope-adapter</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.zhu</groupId>
+                <artifactId>dream-scope-boot</artifactId>
+                <version>${project.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
 
     <build>
         <pluginManagement>
@@ -88,6 +102,12 @@
                     <configuration>
                         <release>${maven.compiler.release}</release>
                         <parameters>true</parameters>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                            </path>
+                        </annotationProcessorPaths>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -116,7 +136,7 @@
                                         <excludes>
                                             <exclude>io.agentscope:*</exclude>
                                         </excludes>
-                                        <message>io.agentscope 只允许出现在 dream-scope-adapter</message>
+                                        <message>io.agentscope 只允许出现在 dream-scope-adapter 与 dream-scope-boot</message>
                                     </bannedDependencies>
                                 </rules>
                             </configuration>
