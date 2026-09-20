@@ -14,7 +14,7 @@
 | 构建 | Maven | 3.9+ |
 | 运行时 | Spring Boot 3（Jakarta） | **3.5.5** |
 | HTTP | `spring-boot-starter-web` | 随 Boot |
-| 观测 | `spring-boot-starter-actuator`（`health` / `info`） | 随 Boot |
+| 观测 | Actuator `health` / `info` / `metrics` / `prometheus`；chat 挂 `OtelTracingMiddleware`（配了 OTLP 才导出） | 随 Boot；OTel 随 AgentScope BOM |
 | Agent 框架 | [AgentScope Java](https://java.agentscope.io/) `agentscope-core` + `agentscope-harness` + `agentscope-extensions-redis`（`RedisDistributedStore`） | **2.0.3** |
 | Redis | `redis:7-alpine`（Docker Compose）+ Jedis | 随 AgentScope BOM |
 | 模型供应商 | `agentscope-extensions-model-dashscope`（默认 `dashscope:qwen-plus`，`DASHSCOPE_API_KEY`） | **2.0.3** |
@@ -30,9 +30,10 @@
 | `dream-scope-domain` | SPI、请求响应、Agent 注册表；零框架依赖 |
 | `dream-scope-adapter` | AgentScope 装配（模型、消息编解码、后续 Harness / 状态） |
 | `dream-scope-knowledge` | RAG 实现，只依赖 domain |
-| `dream-scope-web` | 唯一可启动模块：HTTP / Actuator / SSE |
+| `dream-scope-web` | **默认产品入口**：手写 `PortsConfig` + HTTP / Actuator / SSE（端口 `8091`） |
+| `dream-scope-boot` | **可选对照入口**：官方 `agentscope-spring-boot-starter`（端口 `8092`），不替代 web |
 
-内置 `agentId`：`chat`（已接线，默认）。`knowledge` / `task` 仅为预留 id，调用返回 `404`。
+内置 `agentId`：`chat`（默认）、`knowledge`（只检索，不调模型）。配了 `dream-scope.a2a.remote-url` 时还有 `a2a`。`task` 预留，调用返回 `404`。chat 也可调 `retrieve`。索引是进程内关键词，启动时写入几条演示文案，没有向量库。
 
 ## 环境
 
@@ -88,12 +89,55 @@ $env:DASHSCOPE_API_KEY = "your-key"
 ```bash
 mvn -q test
 mvn -pl dream-scope-web -am spring-boot:run
+# 对照：官方 starter（端口 8092，无 Redis / Harness）
+# mvn -pl dream-scope-boot -am spring-boot:run
 ```
 
-默认端口 `8091`。健康检查：
+默认端口 `8091`。观测：
 
 ```bash
 curl http://localhost:8091/actuator/health
+curl http://localhost:8091/actuator/metrics
+curl http://localhost:8091/actuator/prometheus
+```
+
+链路：chat 已挂手册里的 `OtelTracingMiddleware`（`invoke_agent` / `chat` / `execute_tool`）。未配 `OTEL_EXPORTER_OTLP_ENDPOINT` 时是 no-op。导出示例：
+
+```bash
+export OTEL_SERVICE_NAME=dream-scope
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_TRACES_EXPORTER=otlp
+```
+
+## 两种 Spring 集成
+
+| | `dream-scope-web`（默认） | `dream-scope-boot`（对照） |
+|---|---|---|
+| 装配 | 手写 `PortsConfig` | 官方 starters（见下表） |
+| Agent | `HarnessAgent`（workspace / Redis / Plan / Skill / MCP） | starter 默认 `ReActAgent`（内存 Memory、空 Toolkit） |
+| 配置前缀 | `dream-scope.*` | `agentscope.*` |
+| 端口 | `8091` | `8092` |
+| 依赖 | web **不要**依赖 boot，避免两套 Bean 叠在同一进程 | 独立可启动模块；`io.agentscope` 与 adapter 一样允许出现 |
+
+`dream-scope-boot` 已挂上 2.0.3 官方 starter。厂商只按 `agentscope.model.provider` 启用一个 Model（默认 `dashscope`）。
+
+| Starter | 开关 / 入口 |
+|---|---|
+| `agentscope-spring-boot-starter` | `agentscope.agent.enabled` |
+| `*-dashscope / openai / anthropic / gemini / ollama` | `agentscope.model.provider` + 各 `agentscope.<厂商>.*` |
+| `chat-completions-web-starter` | `POST /v1/chat/completions`（`agentscope.chat-completions`） |
+| `agui-spring-boot-starter` | `/agui`（默认 agent id = `agentscopeReActAgent`） |
+| `admin-spring-boot-starter` | `/v1/admin`，`agentscope.admin.enabled=true`，写操作默认关 |
+| `a2a-spring-boot-starter` | `agentscope.a2a.server.enabled` |
+| `nacos-spring-boot-starter` | `agentscope.a2a.nacos.enabled` / `agentscope.nacos.prompt.enabled`，默认关（没 Nacos 会起不来） |
+
+对照入口另外还有 `POST /api/agents/invoke` 与 `/stream`。DashScope Key：`DASHSCOPE_API_KEY`。没有 Harness，也就没有 Redis / 子 Agent / 技能 / Plan Mode。
+
+```bash
+mvn -pl dream-scope-boot -am spring-boot:run
+curl -s http://localhost:8092/api/agents/invoke \
+  -H "Content-Type: application/json" \
+  -d "{\"input\":\"你好\"}"
 ```
 
 ## 调用
@@ -111,11 +155,11 @@ curl http://localhost:8091/actuator/health
 
 模型超时返回 `504`，供应商/运行失败返回 `502`。
 
-chat 已注册演示工具（无 Spring）：`getCurrentTime`、`calculate`（四则运算）、`httpGet`（仅 http/https，截断响应体）。模型需要时会走 ReAct 调工具。Harness 默认的工作区 `read_file`/`write_file`/`shell` **已关闭**，避免 HTTP 进程在本机执行文件和命令。
+chat 已注册演示工具（无 Spring）：`getCurrentTime`、`calculate`（四则运算）、`httpGet`（仅 http/https，截断响应体）、`retrieve`（进程内关键词检索，返回 `[1]` 编号资料）。模型需要时会走 ReAct 调工具。Harness 默认的工作区 `read_file`/`write_file`/`shell` **已关闭**，避免 HTTP 进程在本机执行文件和命令。
 
 默认开启 Plan Mode：模型可自行 `plan_enter` / `plan_write` / `plan_exit`（计划文件写在工作区 `plans/`）。不提供 HTTP 手动进入，也不做人审确认；计划模式里仍然不允许 Shell。普通问答模型不进计划则行为与原来相同。`/invoke` 与 SSE `done` 带 `planActive`。
 
-chat 挂了 `LoggingMiddleware`（SLF4J，无 Spring 注解）：一次调用会打 `onAgent` / `onModelCall` / `onActing` 的 start/complete（含 `agentId`、`sessionId`、耗时）。看控制台即可，不另加日志库。
+chat 挂了 `OtelTracingMiddleware` + `LoggingMiddleware`（无 Spring 注解）。日志打 `onAgent` / `onModelCall` / `onActing` 的 start/complete（含 `agentId`、`sessionId`、耗时）。看控制台即可。
 
 ```bash
 curl -s http://localhost:8091/api/agents/invoke \
@@ -158,8 +202,12 @@ Spring 绑定前缀 `dream-scope`；同名环境变量（relaxed binding）也�
 | `dream-scope.compaction.keep-messages` | 压缩后保留最近原文条数，默认 `10` |
 | `dream-scope.plan-mode.enabled` / `DREAM_SCOPE_PLAN_MODE_ENABLED` | 是否 `enablePlanMode`，默认 `true` |
 | `dream-scope.plan-mode.directory` / `DREAM_SCOPE_PLAN_MODE_DIRECTORY` | 计划文件相对工作区目录，默认 `plans` |
+| `dream-scope.mcp.servers` | 可选。工作区 `tools.json` 的 MCP 列表；仅 http/https 的 streamableHttp 或 sse |
+| `dream-scope.a2a.enabled` / `DREAM_SCOPE_A2A_ENABLED` | 是否暴露 Agent Card 与 `/a2a`，默认 `true` |
+| `dream-scope.a2a.public-url` / `DREAM_SCOPE_A2A_PUBLIC_URL` | 写入 Agent Card 的对外根地址，默认 `http://127.0.0.1:8091` |
+| `dream-scope.a2a.remote-url` / `DREAM_SCOPE_A2A_REMOTE_URL` | 可选。非空时注册 `agentId=a2a` 调用远端 |
 
-`DREAM_SCOPE_MODEL_KNOWLEDGE` 预留给尚未接线的 knowledge Agent。
+`DREAM_SCOPE_MODEL_KNOWLEDGE` 预留：knowledge 当前只检索、不调模型。
 
 ## 子 Agent
 
@@ -213,11 +261,33 @@ curl -s http://localhost:8091/api/agents/invoke \
 
 自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。Git / Nacos 市场与自学习闭环本期不接。
 
+## MCP
+
+Harness 在 `build()` 时读工作区 `tools.json` 的 `mcpServers`。启动会先拷 bundled 空文件，再按 `dream-scope.mcp.servers` 覆写。只允许 `streamableHttp` / `sse`（http/https），**禁止 stdio**（HTTP 进程不拉本地 MCP 子进程）。配了之后模型会看到 `mcp__{name}__{tool}`。未配服务器则工具表不变。
+
+```yaml
+dream-scope:
+  mcp:
+    servers:
+      - name: weather
+        transport: streamableHttp
+        url: https://example.com/mcp
+```
+
+## A2A
+
+不引入官方 Spring starter，也不接 Nacos。本进程作为 A2A Server：
+
+- `GET /.well-known/agent-card.json`
+- `POST /a2a`（JSON-RPC `message/send` → 内置 chat）
+
+配 `dream-scope.a2a.remote-url` 时额外注册 `agentId=a2a`，把请求转到远端同一套 JSON-RPC。`dream-scope.a2a.enabled=false` 时关掉本机 Card / `/a2a`。
+
 ## Roadmap
 
-HITL、分阶段 RAG、MCP。
+HITL、knowledge 调模型、入库/向量检索。
 
-不做：计费、管理后台、A2A/Nacos。
+不做：计费、管理后台、Nacos。
 
 ## License
 
