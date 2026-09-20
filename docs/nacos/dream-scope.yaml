@@ -1,0 +1,7 @@
+# 贴到 Nacos 控制台：Data ID = dream-scope.yaml，Group = DEFAULT_GROUP
+# 开启 DREAM_SCOPE_NACOS_CONFIG_ENABLED=true 后，启动时覆盖本地 application.yml。
+# chat Harness 在 PortsConfig 里 build 一次，改模型/超时后要重启才进 Agent。
+dream-scope:
+  chat-timeout: 120s
+  model:
+    temperature: 0.7

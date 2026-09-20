@@ -78,7 +78,7 @@ class ScopeChatAgentTest {
     void generateOptionsSkippedWhenUnset() {
         ChatHarnessOptions options =
                 new ChatHarnessOptions(
-                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, null, null, null, null);
+                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, null, null, null, null, null);
         assertEquals(null, ScopeChatAgent.generateOptions(options));
     }
 
@@ -86,7 +86,7 @@ class ScopeChatAgentTest {
     void generateOptionsMapsConfiguredFields() {
         ChatHarnessOptions options =
                 new ChatHarnessOptions(
-                        Duration.ofSeconds(1), null, 0, 0, null, null, 0.2, 0.8, 1024, null, null, null, null);
+                        Duration.ofSeconds(1), null, 0, 0, null, null, 0.2, 0.8, 1024, null, null, null, null, null);
         GenerateOptions mapped = ScopeChatAgent.generateOptions(options);
         assertEquals(0.2, mapped.getTemperature());
         assertEquals(0.8, mapped.getTopP());
@@ -97,7 +97,7 @@ class ScopeChatAgentTest {
     void resolveFallbackModelSkipsBlankOrSameId() {
         ChatHarnessOptions blank =
                 new ChatHarnessOptions(
-                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, "  ", null, null, null);
+                        Duration.ofSeconds(1), null, 0, 0, null, null, null, null, null, "  ", null, null, null, null);
         assertEquals(null, ScopeChatAgent.resolveFallbackModel("dashscope:qwen-plus", blank));
         ChatHarnessOptions same =
                 new ChatHarnessOptions(
@@ -112,6 +112,7 @@ class ScopeChatAgentTest {
                         null,
                         "dashscope:qwen-plus",
                         "key",
+                        null,
                         null,
                         null);
         assertEquals(null, ScopeChatAgent.resolveFallbackModel("dashscope:qwen-plus", same));
@@ -128,6 +129,7 @@ class ScopeChatAgentTest {
                         null,
                         "dashscope:qwen-turbo",
                         "  ",
+                        null,
                         null,
                         null);
         assertThrows(

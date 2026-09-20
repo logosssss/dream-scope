@@ -4,6 +4,26 @@ server:
 spring:
   application:
     name: dream-scope
+  config:
+    import: optional:nacos:dream-scope.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:}
+      password: ${NACOS_PASSWORD:}
+      config:
+        enabled: ${DREAM_SCOPE_NACOS_CONFIG_ENABLED:false}
+        import-check:
+          enabled: false
+        file-extension: yaml
+        namespace: ${NACOS_CLOUD_NAMESPACE:}
+        group: DEFAULT_GROUP
+        refresh-enabled: true
+      discovery:
+        enabled: ${DREAM_SCOPE_NACOS_DISCOVERY_ENABLED:false}
+        namespace: ${NACOS_CLOUD_NAMESPACE:}
+        group: DEFAULT_GROUP
+        fail-fast: false
 
 management:
   endpoints:
@@ -43,3 +63,18 @@ dream-scope:
     public-url: http://127.0.0.1:8091
   rag:
     provider: auto
+  nacos:
+    enabled: false
+    server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+    namespace: ${NACOS_NAMESPACE:public}
+    username: ${NACOS_USERNAME:}
+    password: ${NACOS_PASSWORD:}
+    prompt:
+      enabled: false
+      sys-prompt-key: dream-scope-chat
+    a2a:
+      registry-enabled: false
+      discovery-enabled: false
+      discovery-agent-name: dream-scope-chat
+      register-as-latest: true
+      register-endpoint: true

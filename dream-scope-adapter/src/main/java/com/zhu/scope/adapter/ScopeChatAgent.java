@@ -172,7 +172,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 false,
                 "plans",
                 null,
-                List.of());
+                List.of(),
+                null);
     }
 
     /**
@@ -195,13 +196,18 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             boolean planModeEnabled,
             String planDirectory,
             RetrievePort retrievePort,
-            List<McpClientWrapper> mcpClients) {
+            List<McpClientWrapper> mcpClients,
+            String sysPromptOverride) {
         ChatOtel.install();
         this.callTimeout = normalizeTimeout(callTimeout);
         this.redisClient = redisClient;
         this.planModeEnabled = planModeEnabled;
         this.mcpClients = mcpClients == null || mcpClients.isEmpty() ? List.of() : List.copyOf(mcpClients);
-        String prompt = planModeEnabled ? SYS_PROMPT + PLAN_PROMPT : SYS_PROMPT;
+        String base = SYS_PROMPT;
+        if (sysPromptOverride != null && !sysPromptOverride.isBlank()) {
+            base = SYS_PROMPT + "\n" + sysPromptOverride.trim();
+        }
+        String prompt = planModeEnabled ? base + PLAN_PROMPT : base;
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(AgentIds.CHAT)
                 .sysPrompt(prompt)
@@ -287,7 +293,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     options.planModeEnabled(),
                     options.planDirectory(),
                     retrievePort,
-                    mcpClients);
+                    mcpClients,
+                    options.sysPromptOverride());
         } catch (RuntimeException ex) {
             ChatMcp.closeQuietly(mcpClients);
             jedis.close();

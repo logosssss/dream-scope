@@ -1,0 +1,5 @@
+# 贴到 Nacos 控制台：Data ID = dream-scope-boot.yaml，Group = DEFAULT_GROUP
+# 开启 DREAM_SCOPE_NACOS_CONFIG_ENABLED=true 后，启动时覆盖本地 application.yml。
+agentscope:
+  agent:
+    max-iters: 10

@@ -4,6 +4,26 @@ server:
 spring:
   application:
     name: dream-scope-boot
+  config:
+    import: optional:nacos:dream-scope-boot.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:}
+      password: ${NACOS_PASSWORD:}
+      config:
+        enabled: ${DREAM_SCOPE_NACOS_CONFIG_ENABLED:false}
+        import-check:
+          enabled: false
+        file-extension: yaml
+        namespace: ${NACOS_CLOUD_NAMESPACE:}
+        group: DEFAULT_GROUP
+        refresh-enabled: true
+      discovery:
+        enabled: ${DREAM_SCOPE_NACOS_DISCOVERY_ENABLED:false}
+        namespace: ${NACOS_CLOUD_NAMESPACE:}
+        group: DEFAULT_GROUP
+        fail-fast: false
 
 management:
   endpoints:
@@ -15,7 +35,7 @@ dream-scope:
   chat-timeout: 120s
 
 # 官方 starters。厂商只按 agentscope.model.provider 启用一个 Model。
-# Nacos prompt 的 ReAct 装配 matchIfMissing=true，必须显式关掉，否则没 Nacos 起不来。
+# Nacos：prompt / A2A（agentscope.*）与配置中心 / 服务发现（spring.cloud.nacos.*）都默认关。
 agentscope:
   agent:
     enabled: true

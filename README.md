@@ -4,7 +4,7 @@
 
 业务契约放在 `dream-scope-domain`（禁止依赖 `io.agentscope.*`），框架装配关在 `dream-scope-adapter`。当前主路径：同步 `POST /api/agents/invoke`（`HarnessAgent.call` 语义，内部走 `streamEvents` 累积 `Done`）与流式 `POST /api/agents/stream`（SSE）。chat 带 workspace / Middleware 挂点。
 
-本仓库版本 `0.1.0-SNAPSHOT`。版本锁在根 POM / `dream-scope-bom`：Spring Boot BOM + `agentscope-dependencies-bom`。
+本仓库版本 `0.1.0-SNAPSHOT`。版本锁在根 POM / `dream-scope-bom`：Spring Boot BOM + Spring Cloud Alibaba **2025.0.0.0** + `agentscope-dependencies-bom`。
 
 ## 技术栈
 
@@ -13,6 +13,7 @@
 | 语言 | Java（`maven.compiler.release`） | 21 |
 | 构建 | Maven | 3.9+ |
 | 运行时 | Spring Boot 3（Jakarta） | **3.5.5** |
+| 配置 / 发现 | Spring Cloud Alibaba Nacos Config + Discovery（默认关） | **2025.0.0.0** |
 | HTTP | `spring-boot-starter-web` | 随 Boot |
 | 观测 | Actuator `health` / `info` / `metrics` / `prometheus`；chat 挂 `OtelTracingMiddleware`（配了 OTLP 才导出） | 随 Boot；OTel 随 AgentScope BOM |
 | Agent 框架 | [AgentScope Java](https://java.agentscope.io/) `agentscope-core` + `agentscope-harness` + `agentscope-extensions-redis`（`RedisDistributedStore`） | **2.0.3** |
@@ -26,20 +27,21 @@
 
 | 模块 | 职责 |
 |---|---|
-| `dream-scope-bom` | 对外版本锁（Spring Boot / AgentScope / 本仓库模块） |
+| `dream-scope-bom` | 对外版本锁（Spring Boot / Spring Cloud Alibaba / AgentScope / 本仓库模块） |
 | `dream-scope-domain` | SPI、请求响应、Agent 注册表；零框架依赖 |
 | `dream-scope-adapter` | AgentScope 装配（模型、消息编解码、后续 Harness / 状态） |
 | `dream-scope-knowledge` | RAG 实现，只依赖 domain |
 | `dream-scope-web` | **默认产品入口**：手写 `PortsConfig` + HTTP / Actuator / SSE（端口 `8091`） |
 | `dream-scope-boot` | **可选对照入口**：官方 `agentscope-spring-boot-starter`（端口 `8092`），不替代 web |
 
-内置 `agentId`：`chat`（默认）、`knowledge`（只检索，不调模型）。配了 `dream-scope.a2a.remote-url` 时还有 `a2a`。`task` 预留，调用返回 `404`。chat 也可调 `retrieve`。索引是进程内关键词，启动时写入几条演示文案，没有向量库。
+内置 `agentId`：`chat`（默认）、`knowledge`（只检索，不调模型）。配了 `dream-scope.a2a.remote-url` 或 Nacos A2A 发现时还有 `a2a`。`task` 预留，调用返回 `404`。chat 也可调 `retrieve`。索引是进程内关键词，启动时写入几条演示文案，没有向量库。
 
 ## 环境
 
 - JDK 21
 - Maven 3.9+
 - Redis（必选）。本地：`docker compose up -d redis`
+- Nacos 3.x（可选，默认全关）。三套开关互不绑死：AgentScope AI（prompt / A2A）、配置中心、服务发现。本地：`docker compose up -d nacos`
 
 ## 本地运行
 
@@ -58,6 +60,7 @@ cp .env.example .env
 
 ```bash
 docker compose up -d redis
+# 可选 Nacos 3.x：docker compose up -d nacos
 export DASHSCOPE_API_KEY=your-key
 # 可选
 export DREAM_SCOPE_MODEL_CHAT=dashscope:qwen-plus
@@ -129,7 +132,8 @@ export OTEL_TRACES_EXPORTER=otlp
 | `agui-spring-boot-starter` | `/agui`（默认 agent id = `agentscopeReActAgent`） |
 | `admin-spring-boot-starter` | `/v1/admin`，`agentscope.admin.enabled=true`，写操作默认关 |
 | `a2a-spring-boot-starter` | `agentscope.a2a.server.enabled` |
-| `nacos-spring-boot-starter` | `agentscope.a2a.nacos.enabled` / `agentscope.nacos.prompt.enabled`，默认关（没 Nacos 会起不来） |
+| `nacos-spring-boot-starter` | `agentscope.a2a.nacos.enabled` / `agentscope.nacos.prompt.enabled`，**必须显式 true**（没 Nacos 会起不来） |
+| SCA `nacos-config` / `nacos-discovery` | `DREAM_SCOPE_NACOS_CONFIG_ENABLED` / `DREAM_SCOPE_NACOS_DISCOVERY_ENABLED`，默认 false；与上面 AI starter 独立 |
 
 对照入口另外还有 `POST /api/agents/invoke` 与 `/stream`。DashScope Key：`DASHSCOPE_API_KEY`。没有 Harness，也就没有 Redis / 子 Agent / 技能 / Plan Mode。
 
@@ -205,7 +209,18 @@ Spring 绑定前缀 `dream-scope`；同名环境变量（relaxed binding）也�
 | `dream-scope.mcp.servers` | 可选。工作区 `tools.json` 的 MCP 列表；仅 http/https 的 streamableHttp 或 sse |
 | `dream-scope.a2a.enabled` / `DREAM_SCOPE_A2A_ENABLED` | 是否暴露 Agent Card 与 `/a2a`，默认 `true` |
 | `dream-scope.a2a.public-url` / `DREAM_SCOPE_A2A_PUBLIC_URL` | 写入 Agent Card 的对外根地址，默认 `http://127.0.0.1:8091` |
-| `dream-scope.a2a.remote-url` / `DREAM_SCOPE_A2A_REMOTE_URL` | 可选。非空时注册 `agentId=a2a` 调用远端 |
+| `dream-scope.a2a.remote-url` / `DREAM_SCOPE_A2A_REMOTE_URL` | 可选。well-known 发现远端；Nacos discovery 开启时忽略 |
+| `dream-scope.nacos.enabled` / `DREAM_SCOPE_NACOS_ENABLED` | AgentScope AI 总开关。默认 `false`。true 时连 Nacos 3.x AI（8848 + gRPC 9848） |
+| `dream-scope.nacos.server-addr` / `NACOS_SERVER_ADDR` | 默认 `127.0.0.1:8848`（AI 与 Spring Cloud 共用） |
+| `dream-scope.nacos.namespace` / `NACOS_NAMESPACE` | AI 用。默认 `public`（填 namespaceId） |
+| `dream-scope.nacos.prompt.enabled` | 启动时拉 prompt，**拼在**内置 SYS_PROMPT 后；改 Nacos 后要重启 |
+| `dream-scope.nacos.prompt.sys-prompt-key` | 默认 `dream-scope-chat` |
+| `dream-scope.nacos.a2a.registry-enabled` | `postEndpointReady` 时把本机 Agent Card 注册进 Nacos |
+| `dream-scope.nacos.a2a.discovery-enabled` | 注册 `agentId=a2a`，用 Nacos 发现（优先于 `a2a.remote-url`） |
+| `dream-scope.nacos.a2a.discovery-agent-name` | 默认 `dream-scope-chat`，须与 Nacos 里的 Agent 名一致 |
+| `spring.cloud.nacos.config.enabled` / `DREAM_SCOPE_NACOS_CONFIG_ENABLED` | 配置中心。默认 `false`。Data ID = `{spring.application.name}.yaml`，示例见 `docs/nacos/` |
+| `spring.cloud.nacos.discovery.enabled` / `DREAM_SCOPE_NACOS_DISCOVERY_ENABLED` | 服务发现。默认 `false`。注册名 = `spring.application.name`（web=`dream-scope`，boot=`dream-scope-boot`） |
+| `NACOS_CLOUD_NAMESPACE` | Spring Cloud 配置/发现的 namespaceId；空=public。不要填名字 `public` |
 
 `DREAM_SCOPE_MODEL_KNOWLEDGE` 预留：knowledge 当前只检索、不调模型。
 
@@ -259,7 +274,7 @@ curl -s http://localhost:8091/api/agents/invoke \
 
 当前 bundled：`meeting-notes`（会议纪要，纯指令，无脚本）。HTTP 进程仍关闭文件工具和 Shell，技能里不要放 `scripts/`。
 
-自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。Git / Nacos 市场与自学习闭环本期不接。
+自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。Git / Nacos Skill 市场本期不接（2.0.3 无 `nacos-skill` 工件）。
 
 ## MCP
 
@@ -276,18 +291,38 @@ dream-scope:
 
 ## A2A
 
-不引入官方 Spring starter，也不接 Nacos。本进程作为 A2A Server：
+不引入官方 a2a / nacos Spring starter（对照入口在 boot）。本进程作为 A2A Server：
 
 - `GET /.well-known/agent-card.json`
 - `POST /a2a`（JSON-RPC `message/send` → 内置 chat）
 
-配 `dream-scope.a2a.remote-url` 时额外注册 `agentId=a2a`，把请求转到远端同一套 JSON-RPC。`dream-scope.a2a.enabled=false` 时关掉本机 Card / `/a2a`。
+配 `dream-scope.a2a.remote-url` 时额外注册 `agentId=a2a`，走 well-known Card。配 `dream-scope.nacos.a2a.discovery-enabled=true`（且 `nacos.enabled=true`）时改为 `NacosAgentCardResolver`，发现名 `dream-scope.nacos.a2a.discovery-agent-name`。Nacos 发现优先于 remote-url。
+
+`dream-scope.nacos.a2a.registry-enabled=true` 时，`ApplicationReady` 的 `postEndpointReady` 会把 Card / 端点写进 Nacos AI。`dream-scope.a2a.enabled=false` 时关掉本机 Card / `/a2a`。
+
+Nacos 默认关。本地：
+
+```bash
+docker compose up -d nacos
+# 控制台可选：http://127.0.0.1:18080
+# AI（prompt / A2A Card）
+export DREAM_SCOPE_NACOS_ENABLED=true
+export DREAM_SCOPE_NACOS_PROMPT_ENABLED=true
+export DREAM_SCOPE_NACOS_A2A_REGISTRY_ENABLED=true
+# 配置中心 + 服务发现（Spring Cloud Alibaba，与 AI 开关独立）
+export DREAM_SCOPE_NACOS_CONFIG_ENABLED=true
+export DREAM_SCOPE_NACOS_DISCOVERY_ENABLED=true
+```
+
+Prompt 在 Nacos AI 里建 key=`dream-scope-chat` 的模板。web 会把它拼到内置工具/子 Agent 系统提示后面；Harness 的 `sysPrompt` 只在 `build()` 时写入，改 Nacos 后要重启。boot 对照走官方 `agentscope.nacos.prompt.enabled`，是**整段替换** `agentscope.agent.sys-prompt`。
+
+配置中心 Data ID：`dream-scope.yaml` / `dream-scope-boot.yaml`（Group `DEFAULT_GROUP`）。启动时 `optional:nacos:` 导入，覆盖本地 yml；改 `dream-scope.model.*` / 超时后仍要重启（Harness 只 `build()` 一次）。服务发现打开后看控制台，或 `GET /api/nacos/status`、`GET /api/nacos/instances/{serviceId}`（发现关则空列表）。
 
 ## Roadmap
 
 HITL、knowledge 调模型、入库/向量检索。
 
-不做：计费、管理后台、Nacos。
+不做：计费、管理后台。
 
 ## License
 

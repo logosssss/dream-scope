@@ -38,6 +38,8 @@ public class DreamScopeProperties {
 
     private final RagSettings rag = new RagSettings();
 
+    private final NacosSettings nacos = new NacosSettings();
+
     @Getter
     public static class McpSettings {
 
@@ -83,10 +85,63 @@ public class DreamScopeProperties {
 
     @Getter
     @Setter
+    public static class NacosSettings {
+
+        private boolean enabled = false;
+
+        private String serverAddr = "127.0.0.1:8848";
+
+        private String namespace = "public";
+
+        private String username;
+
+        private String password;
+
+        private final PromptSettings prompt = new PromptSettings();
+
+        private final A2aNacosSettings a2a = new A2aNacosSettings();
+    }
+
+    @Getter
+    @Setter
+    public static class PromptSettings {
+
+        private boolean enabled = false;
+
+        private String sysPromptKey = "dream-scope-chat";
+
+        private String version;
+
+        private String label;
+
+        private Map<String, String> variables = new LinkedHashMap<>();
+
+        public void setVariables(Map<String, String> variables) {
+            this.variables = variables == null ? new LinkedHashMap<>() : variables;
+        }
+    }
+
+    @Getter
+    @Setter
+    public static class A2aNacosSettings {
+
+        private boolean registryEnabled = false;
+
+        private boolean discoveryEnabled = false;
+
+        private String discoveryAgentName = "dream-scope-chat";
+
+        private boolean registerAsLatest = true;
+
+        private boolean registerEndpoint = true;
+    }
+
+    @Getter
+    @Setter
     public static class RagSettings {
 
         /**
-         * {@code auto}：有 {@code DASHSCOPE_API_KEY} 用官方 SimpleKnowledge，否则关键词。
+         * {@code auto}：有 {@code DASHSCOPE_API_KEY} 用官方 SimpleKnowledge；无 Key 或 embedding 失败则关键词。
          * {@code simple} / {@code keyword} 强制指定。
          */
         private String provider = "auto";

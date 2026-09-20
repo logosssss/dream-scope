@@ -1,5 +1,6 @@
 package com.zhu.scope.adapter;
 
+import com.zhu.scope.adapter.nacos.ChatNacosClient;
 import com.zhu.scope.agent.AgentHandler;
 import com.zhu.scope.agent.AgentIds;
 import com.zhu.scope.agent.AgentInvokeException;
@@ -26,6 +27,11 @@ public final class ScopeA2aClientAgent implements AgentHandler {
 
     public ScopeA2aClientAgent(String remoteUrl) {
         this(buildRemote(remoteUrl), Duration.ofSeconds(30));
+    }
+
+    public static ScopeA2aClientAgent fromNacos(ChatNacosClient client, String agentName) {
+        Objects.requireNonNull(client, "nacos");
+        return new ScopeA2aClientAgent(client.discover(agentName), Duration.ofSeconds(30));
     }
 
     ScopeA2aClientAgent(A2aAgent remote, Duration timeout) {

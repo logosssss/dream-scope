@@ -20,7 +20,8 @@ public record ChatHarnessOptions(
         String fallbackModelId,
         String fallbackApiKey,
         Boolean planModeEnabled,
-        String planDirectory) {
+        String planDirectory,
+        String sysPromptOverride) {
 
     public static final int DEFAULT_TRIGGER_MESSAGES = 30;
 
@@ -52,6 +53,7 @@ public record ChatHarnessOptions(
         fallbackApiKey = blankToNull(fallbackApiKey);
         planModeEnabled = planModeEnabled == null || planModeEnabled;
         planDirectory = planDirectory == null || planDirectory.isBlank() ? "plans" : planDirectory.trim();
+        sysPromptOverride = blankToNull(sysPromptOverride);
     }
 
     private static String blankToNull(String value) {

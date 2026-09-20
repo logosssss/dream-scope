@@ -4,6 +4,8 @@ import com.zhu.scope.adapter.ChatHarnessOptions;
 import com.zhu.scope.adapter.ScopeA2aClientAgent;
 import com.zhu.scope.adapter.ScopeChatAgent;
 import com.zhu.scope.adapter.ScopeKnowledgeAgent;
+import com.zhu.scope.adapter.nacos.ChatNacosClient;
+import com.zhu.scope.adapter.nacos.ChatNacosSettings;
 import com.zhu.scope.adapter.a2a.ScopeA2aServer;
 import com.zhu.scope.adapter.mcp.ChatMcpServer;
 import com.zhu.scope.adapter.rag.SimpleKnowledgeRetrievePort;
@@ -14,7 +16,12 @@ import com.zhu.scope.knowledge.RetrievePort;
 import com.zhu.scope.rag.InMemoryKeywordIndex;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -51,6 +58,8 @@ import org.springframework.core.env.Environment;
 @EnableConfigurationProperties(DreamScopeProperties.class)
 public class PortsConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(PortsConfig.class);
+
     /**
      * 内置 {@code chat}。{@code destroyMethod = "close"}：Harness → MCP → Jedis。
      *
@@ -63,7 +72,11 @@ public class PortsConfig {
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(name = "chatAgentHandler")
-    AgentHandler chatAgentHandler(DreamScopeProperties props, Environment env, RetrievePort retrievePort) {
+    AgentHandler chatAgentHandler(
+            DreamScopeProperties props,
+            Environment env,
+            RetrievePort retrievePort,
+            ObjectProvider<ChatNacosClient> nacos) {
         String modelId = ScopeChatAgent.resolveModelId(props.getModel().getChat(), props.getModel().getDefault());
         String apiKey = env.getProperty(ScopeChatAgent.apiKeyProperty(modelId));
         WorkspaceSubagentSeed.copyBundled(props.getWorkspaceDir());
@@ -73,6 +86,8 @@ public class PortsConfig {
                 fallbackId == null || fallbackId.isBlank()
                         ? null
                         : env.getProperty(ScopeChatAgent.apiKeyProperty(fallbackId));
+        ChatNacosClient nacosClient = nacos.getIfAvailable();
+        String sysPrompt = nacosClient == null ? null : nacosClient.sysPrompt(null);
         ChatHarnessOptions options = new ChatHarnessOptions(
                 props.getChatTimeout(),
                 props.getWorkspaceDir(),
@@ -86,8 +101,15 @@ public class PortsConfig {
                 fallbackId,
                 fallbackKey,
                 props.getPlanMode().isEnabled(),
-                props.getPlanMode().getDirectory());
+                props.getPlanMode().getDirectory(),
+                sysPrompt);
         return ScopeChatAgent.create(modelId, apiKey, options, retrievePort, mcpServers(props));
+    }
+
+    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(prefix = "dream-scope.nacos", name = "enabled", havingValue = "true")
+    ChatNacosClient chatNacosClient(DreamScopeProperties props) {
+        return ChatNacosClient.open(nacosSettings(props));
     }
 
     /**
@@ -105,8 +127,10 @@ public class PortsConfig {
     @Bean
     @ConditionalOnMissingBean
     ScopeA2aServer scopeA2aServer(
-            @Qualifier("chatAgentHandler") AgentHandler chatAgentHandler, DreamScopeProperties props) {
-        return ScopeA2aServer.create(chatAgentHandler, props.getA2a().getPublicUrl());
+            @Qualifier("chatAgentHandler") AgentHandler chatAgentHandler,
+            DreamScopeProperties props,
+            ObjectProvider<ChatNacosClient> nacos) {
+        return ScopeA2aServer.create(chatAgentHandler, props.getA2a().getPublicUrl(), nacos.getIfAvailable());
     }
 
     @Bean
@@ -120,10 +144,18 @@ public class PortsConfig {
     }
 
     /**
-     * 可选 {@code a2a} 客户端：官方 {@code A2aAgent} 调远端 well-known Card。
-     * 没配 remote-url 则不注册，{@code agentId=a2a} 会 404。本机 Card / {@code POST /a2a} 在 {@code A2aController}。
+     * 可选 {@code a2a} 客户端。Nacos 发现优先；否则 well-known {@code remote-url}。
      */
-    @Bean
+    @Bean(name = "a2aAgentHandler")
+    @ConditionalOnBean(ChatNacosClient.class)
+    @ConditionalOnProperty(prefix = "dream-scope.nacos.a2a", name = "discovery-enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "a2aAgentHandler")
+    AgentHandler a2aNacosAgentHandler(ChatNacosClient nacos, DreamScopeProperties props) {
+        String name = props.getNacos().getA2a().getDiscoveryAgentName();
+        return ScopeA2aClientAgent.fromNacos(nacos, name);
+    }
+
+    @Bean(name = "a2aAgentHandler")
     @ConditionalOnProperty(prefix = "dream-scope.a2a", name = "remote-url")
     @ConditionalOnMissingBean(name = "a2aAgentHandler")
     AgentHandler a2aAgentHandler(DreamScopeProperties props) {
@@ -143,19 +175,40 @@ public class PortsConfig {
      * chat 的 {@code retrieve} 与 {@code knowledge} Handler 共用。换实现只换这个 Bean。
      *
      * <p>{@code dream-scope.rag.provider=auto}（默认）：有 {@code DASHSCOPE_API_KEY} 走官方
-     * {@link SimpleKnowledgeRetrievePort}（SimpleKnowledge + InMemoryStore + text-embedding-v3），否则关键词索引。
-     * {@code simple} 无 Key 则启动失败；{@code keyword} 强制关键词。演示语料三条，与工作区 {@code KNOWLEDGE.md} 互补。
+     * {@link SimpleKnowledgeRetrievePort}（SimpleKnowledge + InMemoryStore + text-embedding-v3）；
+     * 无 Key，或 embedding 入库失败（额度、网络）时回退关键词索引。{@code simple} 失败则启动失败；
+     * {@code keyword} 强制关键词。演示语料三条，与工作区 {@code KNOWLEDGE.md} 互补。
      */
     @Bean
     RetrievePort retrievePort(DreamScopeProperties props, Environment env) {
+        return createRetrievePort(props, env, SimpleKnowledgeRetrievePort::dashScope);
+    }
+
+    static RetrievePort createRetrievePort(
+            DreamScopeProperties props,
+            Environment env,
+            Function<String, SimpleKnowledgeRetrievePort> simpleFactory) {
         if (useSimpleRag(props, env)) {
-            SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.dashScope(env.getProperty("DASHSCOPE_API_KEY"));
-            seedSimple(port);
-            return port;
+            try {
+                SimpleKnowledgeRetrievePort port = simpleFactory.apply(env.getProperty("DASHSCOPE_API_KEY"));
+                seedSimple(port);
+                return port;
+            } catch (RuntimeException ex) {
+                if (!isAutoRag(props)) {
+                    throw ex;
+                }
+                Throwable root = ex.getCause() == null ? ex : ex.getCause();
+                log.warn("DashScope embedding 入库失败，auto RAG 回退关键词索引: {}", root.getMessage());
+            }
         }
         InMemoryKeywordIndex index = new InMemoryKeywordIndex();
         seedKeyword(index);
         return index;
+    }
+
+    private static boolean isAutoRag(DreamScopeProperties props) {
+        String provider = props.getRag().getProvider();
+        return provider == null || provider.isBlank() || "auto".equalsIgnoreCase(provider);
     }
 
     private static boolean useSimpleRag(DreamScopeProperties props, Environment env) {
@@ -206,6 +259,27 @@ public class PortsConfig {
                     server.getTimeout()));
         }
         return List.copyOf(out);
+    }
+
+    static ChatNacosSettings nacosSettings(DreamScopeProperties props) {
+        DreamScopeProperties.NacosSettings nacos = props.getNacos();
+        DreamScopeProperties.PromptSettings prompt = nacos.getPrompt();
+        DreamScopeProperties.A2aNacosSettings a2a = nacos.getA2a();
+        return new ChatNacosSettings(
+                nacos.getServerAddr(),
+                nacos.getNamespace(),
+                nacos.getUsername(),
+                nacos.getPassword(),
+                prompt.isEnabled(),
+                prompt.getSysPromptKey(),
+                prompt.getVersion(),
+                prompt.getLabel(),
+                prompt.getVariables(),
+                a2a.isRegistryEnabled(),
+                a2a.isDiscoveryEnabled(),
+                a2a.getDiscoveryAgentName(),
+                a2a.isRegisterAsLatest(),
+                a2a.isRegisterEndpoint());
     }
 
     private static final String[][] DEMO_CHUNKS = {

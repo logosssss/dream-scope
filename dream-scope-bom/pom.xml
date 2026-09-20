@@ -13,7 +13,7 @@
     <artifactId>dream-scope-bom</artifactId>
     <packaging>pom</packaging>
     <name>dream-scope-bom</name>
-    <description>对外再导出版本锁；本仓库内部直接用父 POM 的 dependencyManagement。</description>
+    <description>对外再导出版本锁（Spring Boot / Spring Cloud Alibaba / AgentScope / 本仓库模块）。</description>
 
     <dependencyManagement>
         <dependencies>
@@ -25,11 +25,23 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
+                <version>${spring-cloud-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
                 <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-dependencies-bom</artifactId>
                 <version>${agentscope.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.alibaba.nacos</groupId>
+                <artifactId>nacos-client</artifactId>
+                <version>${nacos-client.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.zhu</groupId>

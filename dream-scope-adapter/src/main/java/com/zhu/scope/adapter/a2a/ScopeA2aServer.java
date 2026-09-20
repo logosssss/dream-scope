@@ -1,5 +1,6 @@
 package com.zhu.scope.adapter.a2a;
 
+import com.zhu.scope.adapter.nacos.ChatNacosClient;
 import com.zhu.scope.agent.AgentHandler;
 import io.a2a.spec.TransportProtocol;
 import io.agentscope.core.a2a.server.AgentScopeA2aServer;
@@ -26,6 +27,10 @@ public final class ScopeA2aServer {
     }
 
     public static ScopeA2aServer create(AgentHandler chat, String publicUrl) {
+        return create(chat, publicUrl, null);
+    }
+
+    public static ScopeA2aServer create(AgentHandler chat, String publicUrl, ChatNacosClient nacos) {
         URI uri = parsePublic(publicUrl);
         String jsonRpc = TransportProtocol.JSONRPC.asString();
         int port = uri.getPort() > 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
@@ -39,11 +44,13 @@ public final class ScopeA2aServer {
                 .defaultInputModes(List.of("text"))
                 .defaultOutputModes(List.of("text"))
                 .build();
-        AgentScopeA2aServer built = AgentScopeA2aServer.builder(new ChatA2aRunner(chat))
+        var builder = AgentScopeA2aServer.builder(new ChatA2aRunner(chat))
                 .agentCard(card)
-                .withTransport(TransportProperties.builder(jsonRpc).host(host).port(port).path("/a2a").build())
-                .build();
-        return new ScopeA2aServer(built);
+                .withTransport(TransportProperties.builder(jsonRpc).host(host).port(port).path("/a2a").build());
+        if (nacos != null && nacos.a2aRegistryEnabled()) {
+            builder.withAgentRegistry(nacos.a2aRegistry());
+        }
+        return new ScopeA2aServer(builder.build());
     }
 
     public Object agentCard() {
