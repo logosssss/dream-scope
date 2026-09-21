@@ -14,12 +14,16 @@ import io.agentscope.core.a2a.agent.card.WellKnownAgentCardResolver;
 import io.agentscope.core.message.Msg;
 import java.time.Duration;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 官方 {@code agentscope-extensions-a2a-client}：{@link A2aAgent} + {@link WellKnownAgentCardResolver}
  * 把远端 A2A Agent 包装成本地 {@code agentId=a2a} Handler。
  */
 public final class ScopeA2aClientAgent implements AgentHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(ScopeA2aClientAgent.class);
 
     private final A2aAgent remote;
 
@@ -47,18 +51,27 @@ public final class ScopeA2aClientAgent implements AgentHandler {
     @Override
     public AgentInvokeResult handle(AgentInvokeRequest request) {
         String input = request == null ? "" : request.input();
+        log.info(
+                "a2a client call sessionId={} inputChars={} preview={}",
+                request == null ? null : request.sessionId(),
+                LogText.chars(input),
+                LogText.preview(input));
         try {
             Msg result = remote.call(input).block(timeout);
-            return new AgentInvokeResult(id(), MessageCodec.textOf(result));
+            String output = MessageCodec.textOf(result);
+            log.info("a2a client done outputChars={}", LogText.chars(output));
+            return new AgentInvokeResult(id(), output);
         } catch (AgentInvokeException ex) {
             throw ex;
         } catch (RuntimeException ex) {
+            log.warn("a2a client failed message={}", ex.getMessage());
             throw new AgentProviderException("a2a remote call failed", ex);
         }
     }
 
     static A2aAgent buildRemote(String remoteUrl) {
         String base = normalizeBase(remoteUrl);
+        log.info("a2a client well-known base={}", base);
         WellKnownAgentCardResolver resolver = WellKnownAgentCardResolver.builder()
                 .baseUrl(base)
                 .relativeCardPath("/.well-known/agent-card.json")

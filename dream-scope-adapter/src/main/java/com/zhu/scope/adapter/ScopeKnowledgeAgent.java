@@ -9,11 +9,15 @@ import com.zhu.scope.agent.StreamingAgentHandler;
 import com.zhu.scope.knowledge.RetrieveCitations;
 import com.zhu.scope.knowledge.RetrievePort;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 内置 {@code knowledge} Agent：只检索，不调模型。对外仍是 domain 类型。
  */
 public final class ScopeKnowledgeAgent implements StreamingAgentHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(ScopeKnowledgeAgent.class);
 
     static final int DEFAULT_TOP_K = 5;
 
@@ -33,8 +37,14 @@ public final class ScopeKnowledgeAgent implements StreamingAgentHandler {
     @Override
     public AgentInvokeResult handle(AgentInvokeRequest request) {
         String query = request == null ? "" : request.input();
-        String formatted = RetrieveCitations.format(retrievePort.retrieve(query, DEFAULT_TOP_K));
+        var hits = retrievePort.retrieve(query, DEFAULT_TOP_K);
+        String formatted = RetrieveCitations.format(hits);
         String output = formatted.isEmpty() ? MISS : formatted;
+        log.info(
+                "knowledge retrieve hits={} queryChars={} preview={}",
+                hits.size(),
+                query.length(),
+                LogText.preview(query, 80));
         return new AgentInvokeResult(id(), output);
     }
 

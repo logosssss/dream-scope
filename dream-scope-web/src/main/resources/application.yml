@@ -1,7 +1,19 @@
 server:
   port: 8091
 
+logging:
+  level:
+    com.zhu.scope: INFO
+    io.agentscope: INFO
+    com.alibaba.nacos: WARN
+    org.apache.pdfbox: ERROR
+    org.apache.fontbox: ERROR
+
 spring:
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
   application:
     name: dream-scope
   config:
@@ -42,9 +54,18 @@ management:
     tags:
       application: ${spring.application.name}
 
+# 模型 Key 写在 dream-scope.model 下。本地可直接填 api-key，不要把真实值提交进仓库。
+# 也可用 ${DASHSCOPE_API_KEY:}，由 Spring 从环境变量注入占位。
+
 dream-scope:
   model:
-    default: dashscope:qwen-plus
+    default: dashscope:qwen3.8-27b
+    api-key: ${DASHSCOPE_API_KEY:}
+    # deepseek-api-key: ${DEEPSEEK_API_KEY:}
+    # openai-api-key: ${OPENAI_API_KEY:}
+    # anthropic-api-key: ${ANTHROPIC_API_KEY:}
+    # gemini-api-key: ${GEMINI_API_KEY:}
+    # fallback-api-key:
   chat-timeout: 120s
   workspace-dir: .agentscope/workspace
   redis:
@@ -63,6 +84,23 @@ dream-scope:
     public-url: http://127.0.0.1:8091
   rag:
     provider: auto
+    # 与对话 model.default 分开。换百炼 embedding 只改这两项。
+    embedding-model: ${DREAM_SCOPE_RAG_EMBEDDING_MODEL:text-embedding-v3}
+    embedding-dimensions: ${DREAM_SCOPE_RAG_EMBEDDING_DIMENSIONS:1024}
+    score-threshold: ${DREAM_SCOPE_RAG_SCORE_THRESHOLD:0.3}
+    chunk-size: ${DREAM_SCOPE_RAG_CHUNK_SIZE:2000}
+    chunk-overlap: ${DREAM_SCOPE_RAG_CHUNK_OVERLAP:200}
+    rerank-enabled: ${DREAM_SCOPE_RAG_RERANK_ENABLED:true}
+    rerank-model: ${DREAM_SCOPE_RAG_RERANK_MODEL:gte-rerank-v2}
+    rewrite-enabled: ${DREAM_SCOPE_RAG_REWRITE_ENABLED:false}
+    rewrite-model: ${DREAM_SCOPE_RAG_REWRITE_MODEL:}
+    candidate-multiplier: ${DREAM_SCOPE_RAG_CANDIDATE_MULTIPLIER:3}
+    pg:
+      jdbc-url: ${DREAM_SCOPE_RAG_PG_JDBC_URL:}
+      username: ${DREAM_SCOPE_RAG_PG_USERNAME:postgres}
+      password: ${DREAM_SCOPE_RAG_PG_PASSWORD:postgres}
+      schema: public
+      table: dream_scope_rag
   nacos:
     enabled: false
     server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
@@ -70,11 +108,21 @@ dream-scope:
     username: ${NACOS_USERNAME:}
     password: ${NACOS_PASSWORD:}
     prompt:
-      enabled: false
+      # 还要 dream-scope.nacos.enabled=true 才会去拉。key 是 Prompt 资源名，不是 Group=agent 的 Card。
+      enabled: true
       sys-prompt-key: dream-scope-chat
+      version: ${DREAM_SCOPE_NACOS_PROMPT_VERSION:}
+      label: ${DREAM_SCOPE_NACOS_PROMPT_LABEL:}
+      variables: {}
     a2a:
       registry-enabled: false
       discovery-enabled: false
       discovery-agent-name: dream-scope-chat
       register-as-latest: true
       register-endpoint: true
+      streaming: false
+    skill:
+      enabled: false
+      names: []
+      version: ${DREAM_SCOPE_NACOS_SKILL_VERSION:}
+      label: ${DREAM_SCOPE_NACOS_SKILL_LABEL:}

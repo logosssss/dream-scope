@@ -11,6 +11,8 @@ import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 官方 {@code agentscope-extensions-a2a-server}：组装 {@link AgentScopeA2aServer} + JSON-RPC transport。
@@ -19,6 +21,8 @@ import java.util.Objects;
  * <p>2.0.3 没有手册里的 {@code JsonRpcTransportProperties}，用 {@link TransportProperties#builder(String)}。
  */
 public final class ScopeA2aServer {
+
+    private static final Logger log = LoggerFactory.getLogger(ScopeA2aServer.class);
 
     private final AgentScopeA2aServer server;
 
@@ -49,15 +53,19 @@ public final class ScopeA2aServer {
                 .withTransport(TransportProperties.builder(jsonRpc).host(host).port(port).path("/a2a").build());
         if (nacos != null && nacos.a2aRegistryEnabled()) {
             builder.withAgentRegistry(nacos.a2aRegistry());
+            log.info("a2a server registry attached");
         }
+        log.info("a2a server built publicUrl={}", uri);
         return new ScopeA2aServer(builder.build());
     }
 
     public Object agentCard() {
+        log.info("a2a server agent-card");
         return server.getAgentCard();
     }
 
     public Object handleJsonRpc(String body, Map<String, String> headers) {
+        log.info("a2a server jsonrpc chars={}", body == null ? 0 : body.length());
         TransportWrapper<?, ?> wrapper = server.getTransportWrapper(TransportProtocol.JSONRPC.asString());
         if (wrapper == null) {
             throw new IllegalStateException("a2a JSONRPC transport missing");
@@ -69,6 +77,7 @@ public final class ScopeA2aServer {
     }
 
     public void postEndpointReady() {
+        log.info("a2a server postEndpointReady");
         server.postEndpointReady();
     }
 

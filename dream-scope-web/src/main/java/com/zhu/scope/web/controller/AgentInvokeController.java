@@ -1,4 +1,4 @@
-package com.zhu.scope.web;
+package com.zhu.scope.web.controller;
 
 import com.zhu.scope.adapter.event.StreamCancelHook;
 import com.zhu.scope.agent.AgentEvent;
@@ -13,6 +13,13 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import com.zhu.scope.adapter.LogText;
+import com.zhu.scope.web.bean.request.AgentInvokeHttpRequest;
+import com.zhu.scope.web.bean.response.AgentInvokeHttpResponse;
+import com.zhu.scope.web.config.DreamScopeProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,6 +33,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  */
 @RestController
 public class AgentInvokeController {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentInvokeController.class);
 
     private static final Duration SSE_TIMEOUT_BUFFER = Duration.ofSeconds(30);
 
@@ -45,7 +54,23 @@ public class AgentInvokeController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "input required");
         }
         AgentHandler handler = requireHandler(request.agentId());
+        log.info(
+                "http invoke start agentId={} sessionId={} userId={} structured={} inputChars={} preview={}",
+                request.agentId(),
+                request.sessionId(),
+                request.userId(),
+                request.structured(),
+                LogText.chars(request.input()),
+                LogText.preview(request.input()));
         AgentInvokeResult result = handler.handle(request);
+        log.info(
+                "http invoke done agentId={} sessionId={} outputChars={} inTokens={} outTokens={} planActive={}",
+                result.agentId(),
+                request.sessionId(),
+                LogText.chars(result.output()),
+                result.inputTokens(),
+                result.outputTokens(),
+                result.planActive());
         return new AgentInvokeHttpResponse(
                 result.agentId(),
                 result.output(),
@@ -67,7 +92,15 @@ public class AgentInvokeController {
         }
         Duration sseTimeout = properties.getChatTimeout().plus(SSE_TIMEOUT_BUFFER);
         SseEmitter emitter = new SseEmitter(sseTimeout.toMillis());
-        SseBridge bridge = new SseBridge(emitter);
+        SseBridge bridge = new SseBridge(emitter, request.agentId(), request.sessionId());
+        log.info(
+                "http stream start agentId={} sessionId={} userId={} structured={} inputChars={} preview={}",
+                request.agentId(),
+                request.sessionId(),
+                request.userId(),
+                request.structured(),
+                LogText.chars(request.input()),
+                LogText.preview(request.input()));
         emitter.onTimeout(bridge::cancel);
         emitter.onCompletion(bridge::cancel);
         emitter.onError(error -> bridge.cancel());
@@ -78,7 +111,10 @@ public class AgentInvokeController {
     private AgentHandler requireHandler(String agentId) {
         return registry
                 .find(agentId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "unknown agent: " + agentId));
+                .orElseThrow(() -> {
+                    log.warn("http unknown agent={}", agentId);
+                    return new ResponseStatusException(HttpStatus.NOT_FOUND, "unknown agent: " + agentId);
+                });
     }
 
     private static AgentInvokeRequest toDomain(AgentInvokeHttpRequest body) {
@@ -107,8 +143,14 @@ public class AgentInvokeController {
 
         private volatile Runnable cancel = () -> {};
 
-        SseBridge(SseEmitter emitter) {
+        private final String agentId;
+
+        private final String sessionId;
+
+        SseBridge(SseEmitter emitter, String agentId, String sessionId) {
             this.emitter = emitter;
+            this.agentId = agentId;
+            this.sessionId = sessionId;
         }
 
         @Override
@@ -120,6 +162,7 @@ public class AgentInvokeController {
             if (!finished.compareAndSet(false, true)) {
                 return;
             }
+            log.info("http stream cancel agentId={} sessionId={}", agentId, sessionId);
             cancel.run();
             emitter.complete();
         }
@@ -131,8 +174,16 @@ public class AgentInvokeController {
             }
             try {
                 String type = typeOf(event);
+                if (!(event instanceof AgentEvent.TextDelta)) {
+                    log.info(
+                            "http stream event agentId={} sessionId={} type={}",
+                            agentId,
+                            sessionId,
+                            type);
+                }
                 emitter.send(SseEmitter.event().name(type).data(bodyOf(event), MediaType.APPLICATION_JSON));
             } catch (IOException ex) {
+                log.warn("http stream send failed agentId={} sessionId={}", agentId, sessionId, ex);
                 cancel();
             }
         }
@@ -142,6 +193,7 @@ public class AgentInvokeController {
             if (!finished.compareAndSet(false, true)) {
                 return;
             }
+            log.info("http stream complete agentId={} sessionId={}", agentId, sessionId);
             emitter.complete();
         }
 
@@ -150,6 +202,12 @@ public class AgentInvokeController {
             if (!finished.compareAndSet(false, true)) {
                 return;
             }
+            log.warn(
+                    "http stream error agentId={} sessionId={} message={}",
+                    agentId,
+                    sessionId,
+                    error == null ? "" : error.getMessage(),
+                    error);
             try {
                 AgentEvent.Error payload =
                         new AgentEvent.Error(error == null ? "" : String.valueOf(error.getMessage()));

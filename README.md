@@ -41,7 +41,7 @@
 - JDK 21
 - Maven 3.9+
 - Redis（必选）。本地：`docker compose up -d redis`
-- Nacos 3.x（可选，默认全关）。三套开关互不绑死：AgentScope AI（prompt / A2A）、配置中心、服务发现。本地：`docker compose up -d nacos`
+- Nacos **3.x**（可选，默认全关）。AgentScope AI（prompt / A2A / skill）走 **gRPC 9848**，不是只开 8848 的 2.x 配置中心。三套开关互不绑死：AI、配置中心、服务发现。本地：`docker compose up -d nacos`（镜像 `v3.1.0`，探活要求 Server ≥ 3.1 且开 9848）
 
 ## 本地运行
 
@@ -210,14 +210,18 @@ Spring 绑定前缀 `dream-scope`；同名环境变量（relaxed binding）也�
 | `dream-scope.a2a.enabled` / `DREAM_SCOPE_A2A_ENABLED` | 是否暴露 Agent Card 与 `/a2a`，默认 `true` |
 | `dream-scope.a2a.public-url` / `DREAM_SCOPE_A2A_PUBLIC_URL` | 写入 Agent Card 的对外根地址，默认 `http://127.0.0.1:8091` |
 | `dream-scope.a2a.remote-url` / `DREAM_SCOPE_A2A_REMOTE_URL` | 可选。well-known 发现远端；Nacos discovery 开启时忽略 |
-| `dream-scope.nacos.enabled` / `DREAM_SCOPE_NACOS_ENABLED` | AgentScope AI 总开关。默认 `false`。true 时连 Nacos 3.x AI（8848 + gRPC 9848） |
+| `dream-scope.nacos.enabled` / `DREAM_SCOPE_NACOS_ENABLED` | AgentScope AI 总开关。默认 `false`。true 时连 **Nacos 3.x AI gRPC（8848 + 9848）**；2.x 或未暴露 9848 会在启动探活失败 |
 | `dream-scope.nacos.server-addr` / `NACOS_SERVER_ADDR` | 默认 `127.0.0.1:8848`（AI 与 Spring Cloud 共用） |
 | `dream-scope.nacos.namespace` / `NACOS_NAMESPACE` | AI 用。默认 `public`（填 namespaceId） |
-| `dream-scope.nacos.prompt.enabled` | 启动时拉 prompt，**拼在**内置 SYS_PROMPT 后；改 Nacos 后要重启 |
-| `dream-scope.nacos.prompt.sys-prompt-key` | 默认 `dream-scope-chat` |
+| `dream-scope.nacos.prompt.enabled` | 每轮 `onSystemPrompt` 拉 Prompt，拼在内置 SYS_PROMPT 后；不必为改模板重启 |
+| `dream-scope.nacos.prompt.sys-prompt-key` | Prompt **资源名**，默认 `dream-scope-chat`。不是配置中心 Group=`agent` 的 Card |
+| `dream-scope.nacos.prompt.version` / `label` | 可选。空=已发布默认版 |
 | `dream-scope.nacos.a2a.registry-enabled` | `postEndpointReady` 时把本机 Agent Card 注册进 Nacos |
 | `dream-scope.nacos.a2a.discovery-enabled` | 注册 `agentId=a2a`，用 Nacos 发现（优先于 `a2a.remote-url`） |
-| `dream-scope.nacos.a2a.discovery-agent-name` | 默认 `dream-scope-chat`，须与 Nacos 里的 Agent 名一致 |
+| `dream-scope.nacos.a2a.discovery-agent-name` | 默认 `dream-scope-chat`，须与 Nacos 里的 Agent 名一致（精确名，无模糊搜） |
+| `dream-scope.nacos.a2a.streaming` | `A2aAgent` 是否 SSE。默认 `false`（`message/send`） |
+| `dream-scope.nacos.skill.enabled` | 挂 `NacosSkillRepository`，从 Nacos 下 Skill ZIP；与本地 workspace `skills/` 并存 |
+| `dream-scope.nacos.skill.names` | 可选已知 skill 名列表；空则按仓库实现列举 |
 | `spring.cloud.nacos.config.enabled` / `DREAM_SCOPE_NACOS_CONFIG_ENABLED` | 配置中心。默认 `false`。Data ID = `{spring.application.name}.yaml`，示例见 `docs/nacos/` |
 | `spring.cloud.nacos.discovery.enabled` / `DREAM_SCOPE_NACOS_DISCOVERY_ENABLED` | 服务发现。默认 `false`。注册名 = `spring.application.name`（web=`dream-scope`，boot=`dream-scope-boot`） |
 | `NACOS_CLOUD_NAMESPACE` | Spring Cloud 配置/发现的 namespaceId；空=public。不要填名字 `public` |
@@ -274,7 +278,7 @@ curl -s http://localhost:8091/api/agents/invoke \
 
 当前 bundled：`meeting-notes`（会议纪要，纯指令，无脚本）。HTTP 进程仍关闭文件工具和 Shell，技能里不要放 `scripts/`。
 
-自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。Git / Nacos Skill 市场本期不接（2.0.3 无 `nacos-skill` 工件）。
+自定义：在工作区 `skills/<name>/SKILL.md` 再放一份（YAML 至少 `name` + `description`），或改 web 模块 `src/main/resources/workspace/skills/` 后重启。也可开 `dream-scope.nacos.skill.enabled`，走官方 `NacosSkillRepository` 从 Nacos 下 ZIP。
 
 ## MCP
 
@@ -314,7 +318,7 @@ export DREAM_SCOPE_NACOS_CONFIG_ENABLED=true
 export DREAM_SCOPE_NACOS_DISCOVERY_ENABLED=true
 ```
 
-Prompt 在 Nacos AI 里建 key=`dream-scope-chat` 的模板。web 会把它拼到内置工具/子 Agent 系统提示后面；Harness 的 `sysPrompt` 只在 `build()` 时写入，改 Nacos 后要重启。boot 对照走官方 `agentscope.nacos.prompt.enabled`，是**整段替换** `agentscope.agent.sys-prompt`。
+Prompt 在 Nacos AI 里建 key=`dream-scope-chat` 的模板（不是配置中心 Group=`agent` 的 Card）。web 每轮 `onSystemPrompt` 拉取并拼到内置系统提示后面。boot 对照走官方 `agentscope.nacos.prompt.enabled`，是**整段替换** `agentscope.agent.sys-prompt`。
 
 配置中心 Data ID：`dream-scope.yaml` / `dream-scope-boot.yaml`（Group `DEFAULT_GROUP`）。启动时 `optional:nacos:` 导入，覆盖本地 yml；改 `dream-scope.model.*` / 超时后仍要重启（Harness 只 `build()` 一次）。服务发现打开后看控制台，或 `GET /api/nacos/status`、`GET /api/nacos/instances/{serviceId}`（发现关则空列表）。
 

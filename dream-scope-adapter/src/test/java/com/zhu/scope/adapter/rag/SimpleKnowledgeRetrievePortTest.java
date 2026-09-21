@@ -1,12 +1,15 @@
 package com.zhu.scope.adapter.rag;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.zhu.scope.knowledge.RetrieveHit;
+import com.zhu.scope.rag.InMemoryKeywordIndex;
 import io.agentscope.core.embedding.EmbeddingModel;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.Test;
@@ -30,11 +33,55 @@ class SimpleKnowledgeRetrievePortTest {
     }
 
     @Test
+    void addFileUsesOfficialTextReader() {
+        SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
+        List<String> ids = port.addFile(
+                "note", "note.md", "dream-scope 运行时".getBytes(StandardCharsets.UTF_8), "note.md", "file");
+        assertEquals(List.of("note"), ids);
+        List<RetrieveHit> hits = port.retrieve("dream-scope", 1);
+        assertEquals(1, hits.size());
+        assertEquals("note", hits.get(0).id());
+        assertEquals("file", hits.get(0).docType());
+    }
+
+    @Test
+    void addTextKeepsStableId() {
+        SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
+        assertEquals("demo-intro", port.addText("demo-intro", "dream-scope 运行时", "intro", "intro"));
+        List<RetrieveHit> hits = port.retrieve("dream-scope", 1);
+        assertEquals(1, hits.size());
+        assertEquals("demo-intro", hits.get(0).id());
+    }
+
+    @Test
     void blankQueryOrNonPositiveTopKIsEmpty() {
         SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
         port.addText("dream-scope 运行时", "intro", "intro");
         assertTrue(port.retrieve("  ", 3).isEmpty());
         assertTrue(port.retrieve("dream-scope", 0).isEmpty());
+    }
+
+    @Test
+    void mirrorsSuccessfulIngestToKeyword() {
+        SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
+        InMemoryKeywordIndex keyword = new InMemoryKeywordIndex();
+        port.mirrorKeyword(keyword);
+        port.addText("demo", "dream-scope Redis 会话", "manual", "note");
+        assertEquals(1, keyword.retrieve("Redis", 3).size());
+        assertEquals("demo", keyword.retrieve("Redis", 3).get(0).id());
+    }
+
+    @Test
+    void reportsEmbeddingProgress() {
+        SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
+        java.util.concurrent.atomic.AtomicInteger lastDone = new java.util.concurrent.atomic.AtomicInteger();
+        port.setIngestProgressListener((stage, done, total) -> {
+            if ("embedding".equals(stage)) {
+                lastDone.set(done);
+            }
+        });
+        port.addFile("note", "note.md", "dream-scope 运行时".getBytes(StandardCharsets.UTF_8), "note.md", "file");
+        assertTrue(lastDone.get() >= 1);
     }
 
     private static final class HashEmbeddingModel implements EmbeddingModel {

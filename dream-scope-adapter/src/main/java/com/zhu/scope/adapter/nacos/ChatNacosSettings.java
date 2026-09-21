@@ -1,5 +1,6 @@
 package com.zhu.scope.adapter.nacos;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,7 +22,12 @@ public record ChatNacosSettings(
         boolean a2aDiscoveryEnabled,
         String a2aDiscoveryAgentName,
         boolean registerAsLatest,
-        boolean registerEndpoint) {
+        boolean registerEndpoint,
+        boolean a2aStreaming,
+        boolean skillEnabled,
+        List<String> skillNames,
+        String skillVersion,
+        String skillLabel) {
 
     public ChatNacosSettings {
         serverAddr = blankToDefault(serverAddr, "127.0.0.1:8848");
@@ -33,6 +39,9 @@ public record ChatNacosSettings(
         promptLabel = blankToNull(promptLabel);
         promptVariables = promptVariables == null || promptVariables.isEmpty() ? Map.of() : Map.copyOf(promptVariables);
         a2aDiscoveryAgentName = blankToNull(a2aDiscoveryAgentName);
+        skillNames = skillNames == null || skillNames.isEmpty() ? List.of() : List.copyOf(skillNames);
+        skillVersion = blankToNull(skillVersion);
+        skillLabel = blankToNull(skillLabel);
     }
 
     private static String blankToNull(String value) {

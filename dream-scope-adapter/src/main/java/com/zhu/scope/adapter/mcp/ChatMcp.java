@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 官方 MCP 客户端：{@link McpClientBuilder} 建连，{@link Toolkit#registerMcpClient} 挂到 Agent。
@@ -16,6 +18,8 @@ import java.util.Objects;
  * 回收连接（stdio 子进程尤其要关）。
  */
 public final class ChatMcp {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatMcp.class);
 
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
@@ -63,10 +67,12 @@ public final class ChatMcp {
                 if (spec == null || spec.name() == null) {
                     continue;
                 }
+                log.info("mcp connect start name={} transport={}", spec.name(), spec.transport());
                 McpClientWrapper client = builderOf(spec).buildAsync().block(blockTimeout(spec));
                 if (client == null) {
                     throw new IllegalStateException("mcp handshake returned null: " + spec.name());
                 }
+                log.info("mcp connect ok name={}", spec.name());
                 opened.add(client);
             }
             return List.copyOf(opened);
@@ -87,6 +93,7 @@ public final class ChatMcp {
             }
             try {
                 toolkit.registerMcpClient(client).block(DEFAULT_TIMEOUT);
+                log.info("mcp register ok name={}", client.getName());
             } catch (RuntimeException ex) {
                 throw new IllegalStateException("mcp register failed: " + client.getName(), ex);
             }

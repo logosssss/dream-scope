@@ -2,6 +2,7 @@ package com.zhu.scope.adapter.tool;
 
 import com.zhu.scope.knowledge.RetrieveCitations;
 import com.zhu.scope.knowledge.RetrievePort;
+import com.zhu.scope.adapter.LogText;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import java.net.URI;
@@ -11,11 +12,15 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Locale;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * chat 演示工具。纯 POJO，无 Spring；由 {@code Toolkit.registerTool} 扫描 {@link Tool}。
  */
 public final class ChatTools {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatTools.class);
 
     static final int DEFAULT_MAX_CHARS = 2000;
 
@@ -67,11 +72,16 @@ public final class ChatTools {
             if (Double.isNaN(value) || Double.isInfinite(value)) {
                 return "计算结果无效";
             }
+            String out;
             if (value == Math.rint(value) && Math.abs(value) < 1e15) {
-                return Long.toString(Math.round(value));
+                out = Long.toString(Math.round(value));
+            } else {
+                out = Double.toString(value);
             }
-            return Double.toString(value);
+            log.info("tool calculate expression={} result={}", expression, out);
+            return out;
         } catch (IllegalArgumentException ex) {
+            log.info("tool calculate invalid expression={}", expression);
             return "无法计算: " + ex.getMessage();
         }
     }
@@ -101,11 +111,14 @@ public final class ChatTools {
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             String body = response.body() == null ? "" : response.body();
             String clipped = body.length() <= limit ? body : body.substring(0, limit);
+            log.info("tool httpGet url={} status={} bodyChars={}", uri, response.statusCode(), body.length());
             return "status=" + response.statusCode() + "\n" + clipped;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
+            log.warn("tool httpGet interrupted url={}", uri);
             return "请求被中断";
         } catch (Exception ex) {
+            log.warn("tool httpGet failed url={} message={}", uri, ex.getMessage());
             return "请求失败: " + ex.getMessage();
         }
     }
@@ -117,10 +130,18 @@ public final class ChatTools {
             @ToolParam(name = "topK", description = "返回条数，默认 3，上限 8", required = false)
             Integer topK) {
         if (retrievePort == null) {
+            log.info("tool retrieve skipped: knowledge not configured");
             return "知识库未配置";
         }
         int limit = topK == null || topK <= 0 ? DEFAULT_TOP_K : Math.min(topK, HARD_MAX_TOP_K);
-        String formatted = RetrieveCitations.format(retrievePort.retrieve(query, limit));
+        var hits = retrievePort.retrieve(query, limit);
+        String formatted = RetrieveCitations.format(hits);
+        log.info(
+                "tool retrieve queryChars={} topK={} hits={} preview={}",
+                query == null ? 0 : query.length(),
+                limit,
+                hits.size(),
+                LogText.preview(query, 80));
         return formatted.isEmpty() ? "未检索到相关资料" : formatted;
     }
 

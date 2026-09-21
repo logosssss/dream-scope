@@ -1,8 +1,10 @@
-package com.zhu.scope.web;
+package com.zhu.scope.web.controller;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.discovery.DiscoveryClient;
@@ -20,6 +22,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/nacos")
 public class NacosCloudController {
+
+    private static final Logger log = LoggerFactory.getLogger(NacosCloudController.class);
 
     private final Environment environment;
 
@@ -39,6 +43,12 @@ public class NacosCloudController {
         body.put("aiEnabled", flag("dream-scope.nacos.enabled"));
         body.put("serverAddr", environment.getProperty("spring.cloud.nacos.server-addr", ""));
         body.put("services", services());
+        log.info(
+                "nacos cloud status config={} discovery={} ai={} services={}",
+                body.get("configEnabled"),
+                body.get("discoveryEnabled"),
+                body.get("aiEnabled"),
+                body.get("services"));
         return body;
     }
 

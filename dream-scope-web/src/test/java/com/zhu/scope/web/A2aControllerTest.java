@@ -10,6 +10,8 @@ import com.zhu.scope.adapter.a2a.ScopeA2aServer;
 import com.zhu.scope.agent.AgentHandler;
 import com.zhu.scope.agent.AgentInvokeRequest;
 import com.zhu.scope.agent.AgentInvokeResult;
+import com.zhu.scope.web.config.DreamScopeProperties;
+import com.zhu.scope.web.controller.A2aController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

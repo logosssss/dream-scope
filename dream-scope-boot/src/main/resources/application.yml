@@ -1,6 +1,12 @@
 server:
   port: 8092
 
+logging:
+  level:
+    com.zhu.scope: INFO
+    io.agentscope: INFO
+    com.alibaba.nacos: WARN
+
 spring:
   application:
     name: dream-scope-boot

@@ -1,7 +1,12 @@
-package com.zhu.scope.web;
+package com.zhu.scope.web.controller;
 
 import com.zhu.scope.adapter.a2a.ScopeA2aServer;
+import com.zhu.scope.adapter.LogText;
 import java.util.Map;
+
+import com.zhu.scope.web.config.DreamScopeProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,6 +21,8 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 public class A2aController {
 
+    private static final Logger log = LoggerFactory.getLogger(A2aController.class);
+
     private final ScopeA2aServer a2aServer;
 
     private final DreamScopeProperties properties;
@@ -28,12 +35,14 @@ public class A2aController {
     @GetMapping("/.well-known/agent-card.json")
     public Object agentCard() {
         requireEnabled();
+        log.info("a2a http agent-card");
         return a2aServer.agentCard();
     }
 
     @PostMapping("/a2a")
     public Object jsonRpc(@RequestBody String body, @RequestHeader Map<String, String> headers) {
         requireEnabled();
+        log.info("a2a http jsonrpc chars={} preview={}", LogText.chars(body), LogText.preview(body, 200));
         return a2aServer.handleJsonRpc(body, headers);
     }
 

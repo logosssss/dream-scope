@@ -112,7 +112,7 @@ class LoggingMiddlewareTest {
         }
 
         verify(log)
-                .info(
+                .warn(
                         eq("chat middleware onAgent error agentId={} sessionId={} elapsedMs={} message={}"),
                         eq("chat"),
                         eq("-"),

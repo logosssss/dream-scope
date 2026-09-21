@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.alibaba.nacos.api.PropertyKeyConst;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,12 @@ class ChatNacosSettingsTest {
                 true,
                 " dream-scope-chat ",
                 true,
-                false);
+                false,
+                false,
+                false,
+                List.of(),
+                null,
+                null);
         assertEquals("127.0.0.1:8848", settings.serverAddr());
         assertEquals("public", settings.namespace());
         assertNull(settings.username());
@@ -38,6 +44,8 @@ class ChatNacosSettingsTest {
         assertTrue(settings.promptEnabled());
         assertTrue(settings.a2aRegistryEnabled());
         assertFalse(settings.registerEndpoint());
+        assertFalse(settings.a2aStreaming());
+        assertFalse(settings.skillEnabled());
         assertEquals("dev", settings.promptVariables().get("env"));
     }
 
@@ -57,7 +65,12 @@ class ChatNacosSettingsTest {
                 false,
                 null,
                 true,
-                true);
+                true,
+                false,
+                false,
+                List.of(),
+                null,
+                null);
         Properties props = ChatNacosClient.clientProperties(settings);
         assertEquals("nacos:8848", props.getProperty(PropertyKeyConst.SERVER_ADDR));
         assertEquals("ns-1", props.getProperty(PropertyKeyConst.NAMESPACE));

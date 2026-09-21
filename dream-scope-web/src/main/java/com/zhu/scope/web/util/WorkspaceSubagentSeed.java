@@ -1,7 +1,9 @@
-package com.zhu.scope.web;
+package com.zhu.scope.web.util;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.zhu.scope.web.config.DreamScopeProperties;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -19,7 +21,7 @@ import java.util.Map;
  * <p>{@code AGENTS.md} / {@code knowledge/KNOWLEDGE.md} / 子 Agent / 技能 / {@code tools.json} 每次启动覆盖 bundled。
  * {@code MEMORY.md} 只在缺失时写入，避免冲掉运行时巩固过的长期记忆。
  */
-final class WorkspaceSubagentSeed {
+public final class WorkspaceSubagentSeed {
 
     static final List<String> BUNDLED = List.of("weather-agent.md", "flight-agent.md");
 
@@ -31,7 +33,7 @@ final class WorkspaceSubagentSeed {
 
     private WorkspaceSubagentSeed() {}
 
-    static void copyBundled(Path workspace) {
+    public static void copyBundled(Path workspace) {
         copyFolder(workspace, "subagents", BUNDLED);
         copyFolder(workspace, "skills", BUNDLED_SKILLS);
         copyFolder(workspace, "knowledge", BUNDLED_KNOWLEDGE);
@@ -45,7 +47,7 @@ final class WorkspaceSubagentSeed {
      * 把 MCP 列表写成 Harness 声明式 {@code tools.json}。产品路径已改走 {@code McpClientBuilder}，
      * {@code PortsConfig} 传入空列表，避免双连。
      */
-    static void applyMcpServers(Path workspace, List<DreamScopeProperties.McpServerSettings> servers) {
+    public static void applyMcpServers(Path workspace, List<DreamScopeProperties.McpServerSettings> servers) {
         if (workspace == null || workspace.toString().isBlank()) {
             return;
         }

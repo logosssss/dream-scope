@@ -15,6 +15,9 @@ import com.zhu.scope.agent.AgentRegistry;
 import com.zhu.scope.agent.AgentStreamHandler;
 import com.zhu.scope.agent.StreamingAgentHandler;
 import java.util.Optional;
+
+import com.zhu.scope.web.config.DreamScopeProperties;
+import com.zhu.scope.web.controller.AgentInvokeController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

@@ -1,4 +1,4 @@
-package com.zhu.scope.web;
+package com.zhu.scope.web.bean.response;
 
 import java.util.Map;
 

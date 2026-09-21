@@ -49,7 +49,7 @@ public final class LoggingMiddleware implements MiddlewareBase {
                         agentId,
                         sessionId,
                         elapsedMs(start)))
-                .doOnError(error -> log.info(
+                .doOnError(error -> log.warn(
                         "chat middleware onAgent error agentId={} sessionId={} elapsedMs={} message={}",
                         agentId,
                         sessionId,
@@ -79,7 +79,7 @@ public final class LoggingMiddleware implements MiddlewareBase {
                         sessionId,
                         model,
                         elapsedMs(start)))
-                .doOnError(error -> log.info(
+                .doOnError(error -> log.warn(
                         "chat middleware onModelCall error agentId={} sessionId={} model={} elapsedMs={} message={}",
                         agentId,
                         sessionId,
@@ -110,7 +110,7 @@ public final class LoggingMiddleware implements MiddlewareBase {
                         sessionId,
                         tools,
                         elapsedMs(start)))
-                .doOnError(error -> log.info(
+                .doOnError(error -> log.warn(
                         "chat middleware onActing error agentId={} sessionId={} tools={} elapsedMs={} message={}",
                         agentId,
                         sessionId,

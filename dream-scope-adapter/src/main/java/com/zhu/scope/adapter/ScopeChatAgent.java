@@ -7,6 +7,7 @@ import com.zhu.scope.adapter.middleware.LoggingMiddleware;
 import io.agentscope.core.tracing.OtelTracingMiddleware;
 import com.zhu.scope.adapter.mcp.ChatMcp;
 import com.zhu.scope.adapter.mcp.ChatMcpServer;
+import com.zhu.scope.adapter.nacos.ChatNacosClient;
 import com.zhu.scope.adapter.subagent.ChatSubagents;
 import com.zhu.scope.adapter.tool.ChatTools;
 import com.zhu.scope.agent.AgentEvent;
@@ -27,6 +28,7 @@ import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelCreationContext;
 import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.harness.agent.DistributedStore;
@@ -39,11 +41,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -70,7 +75,8 @@ import reactor.core.publisher.Mono;
  *
  * <pre>
  * .name                     AgentIds.CHAT（"chat"）
- * .sysPrompt                SYS_PROMPT，Plan Mode 开启时再拼 PLAN_PROMPT
+ * .sysPrompt                SYS_PROMPT，Plan Mode 开启时再拼 PLAN_PROMPT；Nacos Prompt 走 onSystemPrompt 中间件
+ * .skillRepository          可选 NacosSkillRepository（与 workspace skills/ 并存）
  * .model / .fallbackModel   ModelRegistry；fallback 与主模型 id 相同则不加
  * .generateOptions          temperature / topP / maxTokens 全空则不调
  * .toolkit                  ChatTools + 可选 MCP（McpClientBuilder.registerMcpClient）+ Harness agent_spawn
@@ -93,6 +99,8 @@ import reactor.core.publisher.Mono;
  * <p>会话：{@code userId} 与 {@code sessionId} <em>成对非空</em> 才写入 Redis 槽位；只传一个等于无会话。
  */
 public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(ScopeChatAgent.class);
 
     /** yml / 环境都没配模型时的兜底，对应 {@code DASHSCOPE_API_KEY}。 */
     static final String DEFAULT_MODEL_ID = "dashscope:qwen-plus";
@@ -173,6 +181,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 "plans",
                 null,
                 List.of(),
+                null,
                 null);
     }
 
@@ -197,7 +206,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             String planDirectory,
             RetrievePort retrievePort,
             List<McpClientWrapper> mcpClients,
-            String sysPromptOverride) {
+            String sysPromptOverride,
+            ChatNacosClient nacos) {
         ChatOtel.install();
         this.callTimeout = normalizeTimeout(callTimeout);
         this.redisClient = redisClient;
@@ -208,6 +218,15 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             base = SYS_PROMPT + "\n" + sysPromptOverride.trim();
         }
         String prompt = planModeEnabled ? base + PLAN_PROMPT : base;
+        List<MiddlewareBase> extras = new ArrayList<>();
+        AgentSkillRepository nacosSkills = null;
+        if (nacos != null) {
+            MiddlewareBase promptMw = nacos.promptMiddleware();
+            if (promptMw != null) {
+                extras.add(promptMw);
+            }
+            nacosSkills = nacos.skillRepository();
+        }
         HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(AgentIds.CHAT)
                 .sysPrompt(prompt)
@@ -216,9 +235,12 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 .compaction(compactionConfig(compactionTriggerMessages, compactionKeepMessages))
                 .memory(MemoryConfig.defaults())
                 .subagents(chatSubagents())
-                .middlewares(chatMiddlewares())
+                .middlewares(chatMiddlewares(extras))
                 .disableFilesystemTools()
                 .disableShellTool();
+        if (nacosSkills != null) {
+            builder.skillRepository(nacosSkills);
+        }
         if (generateOptions != null) {
             builder.generateOptions(generateOptions);
         }
@@ -241,6 +263,15 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                             planDirectory == null || planDirectory.isBlank() ? "plans" : planDirectory);
         }
         this.agent = builder.build();
+        log.info(
+                "chat harness ready model={} timeout={} workspace={} planMode={} mcp={} nacosPrompt={} nacosSkill={}",
+                model.getModelName(),
+                this.callTimeout,
+                hasWorkspace ? workspace : "-",
+                planModeEnabled && hasWorkspace,
+                this.mcpClients.size(),
+                !extras.isEmpty(),
+                nacosSkills != null);
     }
 
     /**
@@ -272,6 +303,19 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             ChatHarnessOptions options,
             RetrievePort retrievePort,
             List<ChatMcpServer> mcpServers) {
+        return create(modelId, apiKey, options, retrievePort, mcpServers, null);
+    }
+
+    /**
+     * 生产装配。{@code nacos} 非空时挂 Prompt {@code onSystemPrompt} 中间件，以及可选 {@code NacosSkillRepository}。
+     */
+    public static ScopeChatAgent create(
+            String modelId,
+            String apiKey,
+            ChatHarnessOptions options,
+            RetrievePort retrievePort,
+            List<ChatMcpServer> mcpServers,
+            ChatNacosClient nacos) {
         Objects.requireNonNull(options, "options");
         JedisPooled jedis = ChatRedis.open(options.redisUri());
         List<McpClientWrapper> mcpClients = List.of();
@@ -294,7 +338,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     options.planDirectory(),
                     retrievePort,
                     mcpClients,
-                    options.sysPromptOverride());
+                    options.sysPromptOverride(),
+                    nacos);
         } catch (RuntimeException ex) {
             ChatMcp.closeQuietly(mcpClients);
             jedis.close();
@@ -302,7 +347,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
         }
     }
 
-    /** {@code provider:model} → {@link ModelRegistry}。apiKey 由调用方按 {@link #apiKeyProperty} 从环境读取。 */
+    /** {@code provider:model} → {@link ModelRegistry}。apiKey 由调用方从配置传入。 */
     static Model resolveModel(String modelId, String apiKey) {
         String id = resolveModelId(modelId, null);
         ModelCreationContext context = ModelCreationContext.builder().apiKey(apiKey).build();
@@ -395,7 +440,17 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
      * Middleware 类型不得漏到 web / domain。
      */
     static List<MiddlewareBase> chatMiddlewares() {
-        return List.of(new OtelTracingMiddleware(), new LoggingMiddleware());
+        return chatMiddlewares(List.of());
+    }
+
+    static List<MiddlewareBase> chatMiddlewares(List<MiddlewareBase> extra) {
+        List<MiddlewareBase> out = new ArrayList<>();
+        out.add(new OtelTracingMiddleware());
+        out.add(new LoggingMiddleware());
+        if (extra != null) {
+            out.addAll(extra);
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -412,7 +467,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     }
 
     /**
-     * 模型 id 前缀 → 环境变量名。Key <em>不</em>走 {@code dream-scope.*}，进程也不会自动加载 {@code .env}。
+     * 模型 id 前缀 → 历史环境变量名。8091 已改为读 {@code dream-scope.model.*-api-key}。
      */
     public static String apiKeyProperty(String modelId) {
         String id = modelId == null ? "" : modelId.trim().toLowerCase(Locale.ROOT);
@@ -481,13 +536,24 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
             }
         });
         try {
-            return done.get(callTimeout.plusSeconds(5).toMillis(), TimeUnit.MILLISECONDS);
+            AgentInvokeResult result = done.get(callTimeout.plusSeconds(5).toMillis(), TimeUnit.MILLISECONDS);
+            log.info(
+                    "chat invoke done sessionId={} outputChars={} inTokens={} outTokens={} planActive={}",
+                    request.sessionId(),
+                    LogText.chars(result.output()),
+                    result.inputTokens(),
+                    result.outputTokens(),
+                    result.planActive());
+            return result;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
+            log.warn("chat invoke interrupted sessionId={}", request.sessionId());
             throw new AgentProviderException("chat model call interrupted", ex);
         } catch (TimeoutException ex) {
+            log.warn("chat invoke timeout sessionId={} timeout={}", request.sessionId(), callTimeout);
             throw new AgentTimeoutException("chat timed out after " + callTimeout, ex);
         } catch (ExecutionException ex) {
+            log.warn("chat invoke failed sessionId={} message={}", request.sessionId(), ex.getCause() == null ? ex.getMessage() : ex.getCause().getMessage());
             throw mapStreamError(ex.getCause() == null ? ex : ex.getCause());
         }
     }
@@ -502,6 +568,14 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     @Override
     public void streamHandle(AgentInvokeRequest request, AgentStreamHandler handler) {
         Objects.requireNonNull(handler, "handler");
+        log.info(
+                "chat stream start sessionId={} userId={} structured={} images={} inputChars={} preview={}",
+                request.sessionId(),
+                request.userId(),
+                request.structured(),
+                request.imageUrls() == null ? 0 : request.imageUrls().size(),
+                LogText.chars(request.input()),
+                LogText.preview(request.input()));
         Msg inbound = MessageCodec.toUserMessage(request.input(), request.imageUrls());
         RuntimeContext context = RuntimeContext.builder()
                 .userId(blankToNull(request.userId()))
@@ -515,16 +589,34 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     .timeout(callTimeout)
                     .subscribe(
                             msg -> handler.onEvent(withPlan(codec.toDone(msg), context)),
-                            error -> handler.onError(mapStreamError(error)),
-                            handler::onComplete);
+                            error -> {
+                                log.warn(
+                                        "chat stream error sessionId={} structured=true message={}",
+                                        request.sessionId(),
+                                        error == null ? "" : error.getMessage());
+                                handler.onError(mapStreamError(error));
+                            },
+                            () -> {
+                                log.info("chat stream complete sessionId={} structured=true", request.sessionId());
+                                handler.onComplete();
+                            });
         } else {
             disposable = agent.streamEvents(List.of(inbound), context)
                     .timeout(callTimeout)
                     .subscribe(
                             asEvent -> codec.toDomain(asEvent)
                                     .ifPresent(mapped -> handler.onEvent(withPlan(mapped, context))),
-                            error -> handler.onError(mapStreamError(error)),
-                            handler::onComplete);
+                            error -> {
+                                log.warn(
+                                        "chat stream error sessionId={} message={}",
+                                        request.sessionId(),
+                                        error == null ? "" : error.getMessage());
+                                handler.onError(mapStreamError(error));
+                            },
+                            () -> {
+                                log.info("chat stream complete sessionId={}", request.sessionId());
+                                handler.onComplete();
+                            });
         }
         if (handler instanceof StreamCancelHook hook) {
             hook.bindCancel(() -> {
