@@ -1,5 +1,7 @@
 package com.zhu.scope.adapter.rag;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhu.scope.knowledge.QueryRewritePort;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -9,8 +11,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +24,7 @@ public final class DashScopeQueryRewritePort implements QueryRewritePort {
     private static final URI DEFAULT_URI =
             URI.create("https://dashscope.aliyuncs.com/api/v1/services/aigeneration/text-generation/generation");
 
-    private static final Pattern TEXT_FIELD = Pattern.compile("\"text\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final String apiKey;
 
@@ -116,39 +116,33 @@ public final class DashScopeQueryRewritePort implements QueryRewritePort {
         if (json == null || json.isBlank()) {
             return "";
         }
-        Matcher m = TEXT_FIELD.matcher(json);
-        String last = null;
-        while (m.find()) {
-            last = unescape(m.group(1));
-        }
-        return last == null ? "" : last;
-    }
-
-    private static String unescape(String raw) {
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            if (c == '\\' && i + 1 < raw.length()) {
-                char n = raw.charAt(++i);
-                switch (n) {
-                    case 'n' -> out.append('\n');
-                    case 'r' -> out.append('\r');
-                    case 't' -> out.append('\t');
-                    case '"' -> out.append('"');
-                    case '\\' -> out.append('\\');
-                    case 'u' -> {
-                        if (i + 4 < raw.length()) {
-                            out.append((char) Integer.parseInt(raw.substring(i + 1, i + 5), 16));
-                            i += 4;
+        try {
+            JsonNode root = JSON.readTree(json);
+            JsonNode choices = root.path("output").path("choices");
+            String last = "";
+            if (choices.isArray()) {
+                for (JsonNode choice : choices) {
+                    JsonNode content = choice.path("message").path("content");
+                    if (content.isTextual()) {
+                        last = content.asText();
+                    } else if (content.isArray()) {
+                        for (JsonNode part : content) {
+                            JsonNode text = part.get("text");
+                            if (text != null && text.isTextual()) {
+                                last = text.asText();
+                            }
                         }
                     }
-                    default -> out.append(n);
                 }
-            } else {
-                out.append(c);
             }
+            if (!last.isBlank()) {
+                return last;
+            }
+            JsonNode text = root.path("output").path("text");
+            return text.isTextual() ? text.asText() : "";
+        } catch (Exception ex) {
+            return "";
         }
-        return out.toString();
     }
 
     private static String stripProvider(String model) {

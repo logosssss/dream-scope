@@ -1,5 +1,7 @@
 package com.zhu.scope.adapter.rag;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhu.scope.knowledge.RerankPort;
 import com.zhu.scope.knowledge.RetrieveHit;
 import java.net.URI;
@@ -10,8 +12,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,11 +25,7 @@ public final class DashScopeRerankPort implements RerankPort {
     private static final URI DEFAULT_URI =
             URI.create("https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank");
 
-    private static final Pattern RESULT =
-            Pattern.compile("\"index\"\\s*:\\s*(\\d+)\\s*,\\s*\"relevance_score\"\\s*:\\s*([0-9.eE+-]+)");
-
-    private static final Pattern RESULT_SCORE_FIRST =
-            Pattern.compile("\"relevance_score\"\\s*:\\s*([0-9.eE+-]+)\\s*,\\s*\"index\"\\s*:\\s*(\\d+)");
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final String apiKey;
 
@@ -127,41 +123,36 @@ public final class DashScopeRerankPort implements RerankPort {
     }
 
     static List<RetrieveHit> parse(String json, List<RetrieveHit> candidates, int topK) {
-        List<int[]> pairs = new ArrayList<>();
-        Matcher m = RESULT.matcher(json == null ? "" : json);
-        while (m.find()) {
-            pairs.add(new int[] {Integer.parseInt(m.group(1)), encodeScore(Double.parseDouble(m.group(2)))});
+        if (json == null || json.isBlank() || candidates == null) {
+            throw new IllegalStateException("dashscope rerank response missing results");
         }
-        if (pairs.isEmpty()) {
-            Matcher alt = RESULT_SCORE_FIRST.matcher(json == null ? "" : json);
-            while (alt.find()) {
-                pairs.add(new int[] {Integer.parseInt(alt.group(2)), encodeScore(Double.parseDouble(alt.group(1)))});
-            }
+        JsonNode root;
+        try {
+            root = JSON.readTree(json);
+        } catch (Exception ex) {
+            throw new IllegalStateException("dashscope rerank response missing results", ex);
         }
-        if (pairs.isEmpty()) {
+        JsonNode results = root.path("output").path("results");
+        if (!results.isArray()) {
+            results = root.path("results");
+        }
+        if (!results.isArray() || results.isEmpty()) {
             throw new IllegalStateException("dashscope rerank response missing results");
         }
         List<RetrieveHit> out = new ArrayList<>();
-        for (int[] pair : pairs) {
-            int index = pair[0];
+        for (JsonNode node : results) {
+            int index = node.path("index").asInt(-1);
             if (index < 0 || index >= candidates.size()) {
                 continue;
             }
             RetrieveHit hit = candidates.get(index);
-            out.add(new RetrieveHit(hit.id(), hit.text(), decodeScore(pair[1]), hit.source(), hit.docType()));
+            out.add(new RetrieveHit(
+                    hit.id(), hit.text(), node.path("relevance_score").asDouble(0), hit.source(), hit.docType()));
             if (out.size() >= topK) {
                 break;
             }
         }
         return List.copyOf(out);
-    }
-
-    private static int encodeScore(double score) {
-        return (int) Math.round(score * 1_000_000);
-    }
-
-    private static double decodeScore(int encoded) {
-        return encoded / 1_000_000.0;
     }
 
     static String jsonEscape(String raw) {

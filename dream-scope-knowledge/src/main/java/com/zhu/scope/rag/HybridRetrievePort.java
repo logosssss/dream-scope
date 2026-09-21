@@ -1,6 +1,7 @@
 package com.zhu.scope.rag;
 
 import com.zhu.scope.knowledge.EmbeddingIngestException;
+import com.zhu.scope.knowledge.FileChunkReader;
 import com.zhu.scope.knowledge.IngestProgressListener;
 import com.zhu.scope.knowledge.KnowledgeSource;
 import com.zhu.scope.knowledge.RetrieveHit;
@@ -30,6 +31,8 @@ public final class HybridRetrievePort implements RetrievePort {
 
     private final InMemoryKeywordIndex keyword;
 
+    private FileChunkReader fileChunks;
+
     public HybridRetrievePort(RetrievePort primary, InMemoryKeywordIndex keyword) {
         this.primary = primary;
         this.keyword = keyword == null ? new InMemoryKeywordIndex() : keyword;
@@ -44,6 +47,11 @@ public final class HybridRetrievePort implements RetrievePort {
         return keyword;
     }
 
+    /** PDF 等二进制在 embedding 失败后抽正文。未设置时只接受纯文本后缀。 */
+    public void setFileChunkReader(FileChunkReader reader) {
+        this.fileChunks = reader;
+    }
+
     @Override
     public List<RetrieveHit> retrieve(String query, int topK) {
         return retrieve(query, topK, null);
@@ -54,7 +62,7 @@ public final class HybridRetrievePort implements RetrievePort {
         if (query == null || query.isBlank() || topK <= 0) {
             return List.of();
         }
-        int fetch = Math.min(Math.max(topK * 3, topK), 32);
+        int fetch = Math.min(topK * 3, Math.max(topK, 32));
         List<RetrieveHit> vector = safeRetrieve(primary, query, fetch, source);
         List<RetrieveHit> kw = safeRetrieve(keyword, query, fetch, source);
         if (vector.isEmpty() && kw.isEmpty()) {
@@ -183,13 +191,20 @@ public final class HybridRetrievePort implements RetrievePort {
             }
             log.warn("hybrid addFile embedding failed, keyword fallback name={}: {}", filename, ex.getMessage());
             String name = KnowledgeTextFile.basename(filename);
-            if (!KnowledgeTextFile.supported(name)) {
-                throw ex;
-            }
             String src = source == null || source.isBlank() ? name : source.trim();
             String type = docType == null || docType.isBlank() ? "file" : docType.trim();
             String base = id == null || id.isBlank() ? KnowledgeTextFile.stemId(name) : id.trim();
-            return keyword.addFile(base, name, content, src, type);
+            if (KnowledgeTextFile.supported(name)) {
+                return keyword.addFile(base, name, content, src, type);
+            }
+            FileChunkReader reader = fileChunks;
+            if (reader != null) {
+                List<String> texts = reader.read(name, content);
+                if (texts != null && !texts.isEmpty()) {
+                    return addKeywordChunks(base, texts, src, type);
+                }
+            }
+            throw ex;
         }
     }
 

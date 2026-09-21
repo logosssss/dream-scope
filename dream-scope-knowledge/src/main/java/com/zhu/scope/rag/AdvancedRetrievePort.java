@@ -36,6 +36,15 @@ public final class AdvancedRetrievePort implements RetrievePort {
         this.candidateMultiplier = Math.max(1, candidateMultiplier);
     }
 
+    /** {@code min(topK * m, max(topK, 64))}：小 topK 仍放大，大 topK 不再被 64 截到比请求还少。 */
+    static int candidateFetch(int topK, int multiplier) {
+        if (topK <= 0) {
+            return 0;
+        }
+        int m = Math.max(1, multiplier);
+        return Math.min(topK * m, Math.max(topK, 64));
+    }
+
     public AdvancedRetrievePort(RetrievePort inner, RerankPort reranker) {
         this(inner, null, reranker, 3);
     }
@@ -51,7 +60,7 @@ public final class AdvancedRetrievePort implements RetrievePort {
             return List.of();
         }
         List<String> queries = expandQueries(query);
-        int fetch = Math.min(Math.max(topK * candidateMultiplier, topK), 64);
+        int fetch = candidateFetch(topK, candidateMultiplier);
         log.info(
                 "advanced retrieve start topK={} fetch={} source={} queries={} rewrite={} rerank={} chars={}",
                 topK,

@@ -1,6 +1,7 @@
 package com.zhu.scope.rag;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,5 +57,23 @@ class InMemoryKeywordIndexTest {
         assertEquals(2, index.sources().size());
         assertEquals(1, index.deleteBySource("guide.pdf"));
         assertEquals(1, index.sources().size());
+    }
+
+    @Test
+    void chineseBigramMatchesSplitTerms() {
+        InMemoryKeywordIndex index = new InMemoryKeywordIndex();
+        index.ingest("用户的会话已经写入存储层。", "intro", "intro");
+        assertEquals(1, index.retrieve("会话存储", 3).size());
+    }
+
+    @Test
+    void generatedIdsAreUniqueUuids() {
+        InMemoryKeywordIndex index = new InMemoryKeywordIndex();
+        String a = index.addText(null, "alpha Redis one", "s", "n");
+        String b = index.addText(null, "beta Redis two", "s", "n");
+        assertTrue(a.startsWith("kw-"));
+        assertTrue(b.startsWith("kw-"));
+        assertNotEquals(a, b);
+        assertTrue(!a.substring(3).contains("-"));
     }
 }

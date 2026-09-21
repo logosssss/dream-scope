@@ -41,6 +41,27 @@ class HybridRetrievePortTest {
     }
 
     @Test
+    void pdfEmbeddingFailureUsesPlainTextReader() {
+        RetrievePort primary = new RetrievePort() {
+            @Override
+            public List<RetrieveHit> retrieve(String query, int topK) {
+                return List.of();
+            }
+
+            @Override
+            public List<String> addFile(String id, String filename, byte[] content, String source, String docType) {
+                throw new IllegalStateException(
+                        "simple knowledge ingest failed", new RuntimeException("FreeTierOnly"));
+            }
+        };
+        HybridRetrievePort hybrid = new HybridRetrievePort(primary);
+        hybrid.setFileChunkReader((name, content) -> List.of("PDF 正文里的 Redis 会话"));
+        List<String> ids = hybrid.addFile(null, "guide.pdf", new byte[] {'%', 'P', 'D', 'F'}, "guide.pdf", "file");
+        assertEquals(1, ids.size());
+        assertFalse(hybrid.retrieve("Redis", 3).isEmpty());
+    }
+
+    @Test
     void addTextFallsBackOnEmbeddingQuota() {
         RetrievePort primary = new RetrievePort() {
             @Override

@@ -40,4 +40,11 @@ class AdvancedRetrievePortTest {
         assertTrue(seen.contains("AgentGateway HTTP"));
         assertEquals(2, hits.size());
     }
+
+    @Test
+    void candidateFetchKeepsLargeTopK() {
+        assertEquals(15, AdvancedRetrievePort.candidateFetch(5, 3));
+        assertEquals(64, AdvancedRetrievePort.candidateFetch(30, 3));
+        assertEquals(100, AdvancedRetrievePort.candidateFetch(100, 3));
+    }
 }

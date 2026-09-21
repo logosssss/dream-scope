@@ -7,6 +7,12 @@ import java.util.List;
  */
 public interface RetrievePort {
 
+    /**
+     * 唯一的抽象方法：检索
+     * @param query
+     * @param topK
+     * @return
+     */
     List<RetrieveHit> retrieve(String query, int topK);
 
     /**
@@ -17,7 +23,7 @@ public interface RetrievePort {
         if (source == null || source.isBlank() || topK <= 0) {
             return retrieve(query, topK);
         }
-        int fetch = Math.min(Math.max(topK * 8, topK), 64);
+        int fetch = Math.min(topK * 8, Math.max(topK, 64));
         String only = source.trim();
         List<RetrieveHit> hits = retrieve(query, fetch);
         if (hits == null || hits.isEmpty()) {

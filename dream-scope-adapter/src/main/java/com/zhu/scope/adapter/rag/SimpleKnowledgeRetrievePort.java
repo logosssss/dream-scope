@@ -26,16 +26,42 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 官方 {@code agentscope-extensions-rag-simple}：{@link SimpleKnowledge} + {@link InMemoryStore}
- * 或 {@link PgVectorStore} 实现 {@link RetrievePort}。domain / knowledge 不出现 {@code io.agentscope}。
+ * AgentScope 官方 Simple Knowledge 的适配器：把 {@link SimpleKnowledge} + 向量库收成 domain 的
+ * {@link RetrievePort}，供 chat 工具 {@code retrieve}、{@code knowledge} Agent、HTTP 知识接口共用。
  *
- * <p>不接 {@code ReActAgent.knowledge()} / {@code RAGMode.AGENTIC}，避免与 {@code ChatTools.retrieve} 双通道。
+ * <h2>在整条链路里的位置</h2>
+ *
+ * <pre>
+ * HTTP / ChatTools.retrieve
+ *   → RetrievePort（常再包 Hybrid + Advanced）
+ *     → 本类 SimpleKnowledgeRetrievePort
+ *       → SimpleKnowledge（embed + search）
+ *       → InMemoryStore 或 PgVectorStore
+ * </pre>
+ *
+ * <p>{@code io.agentscope} 只允许出现在 adapter；domain / knowledge / web Controller 看不到本类。
+ *
+ * <h2>刻意不做的事</h2>
+ *
+ * <ul>
+ *   <li>不挂 {@code ReActAgent.knowledge()} / {@code RAGMode.AGENTIC}，避免与 {@code ChatTools.retrieve}
+ *       各搜一次、引用两套。
+ *   <li>不在本类做 RRF / 精排 / 问句改写；那些在 {@code HybridRetrievePort}、{@code AdvancedRetrievePort}。
+ * </ul>
+ *
+ * <h2>来源索引与关键词镜像</h2>
+ *
+ * <ul>
+ *   <li>{@link #sourceIds}：进程内 {@code source → docId[]}，支撑列表、按源覆盖删除。内存库随进程清空；
+ *       pg 重启后靠 {@link #rebuildSourceIndexFromStore()} 从 payload 重建。
+ *   <li>{@link #keywordMirror}：向量写入成功后同步正文，供 Hybrid RRF；镜像失败不回滚向量。
+ * </ul>
  *
  * @see <a href="https://java.agentscope.io/v2/en/integration/rag/simple.html">Simple Knowledge</a>
  */
@@ -48,27 +74,45 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
 
     public static final int DEFAULT_DIMENSIONS = ChatEmbeddingSettings.DEFAULT_DIMENSIONS;
 
+    /** 单次 embed / 检索 / 按 id 删除的阻塞上限。大文件分批入库另用 2 分钟。 */
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
 
+    /** AgentScope 封装：写库时 embed，查库时 query embed + 相似度检索。 */
     private final SimpleKnowledge knowledge;
 
+    /**
+     * 需要关闭的底层资源（多为 {@link PgVectorStore}）。内存库一般不关；{@link #close()} 只关这一份。
+     */
     private final AutoCloseable store;
 
+    /**
+     * 向量库句柄。按 docId 删除、判断是否 pg 都走它；与 {@link #knowledge} 共用同一 store 实例。
+     */
     private final VDBStoreBase embeddingStore;
 
-    private final AtomicInteger seq = new AtomicInteger();
-
+    /** 检索最低相似度，写入 {@link RetrieveConfig}，已钳制到 [0, 1]。 */
     private final double scoreThreshold;
 
+    /** Reader 切块大小 / 重叠，仅 {@link #addFile} 使用；{@link #addText} 不切块。 */
     private final int chunkSize;
 
     private final int chunkOverlap;
 
+    /**
+     * 来源 → 该源下所有块 id。同名覆盖先 {@link #deleteBySource} 再写；重启后 pg 需
+     * {@link #rebuildSourceIndexFromStore()}。
+     */
     private final Map<String, List<String>> sourceIds = new ConcurrentHashMap<>();
 
+    /**
+     * 可选关键词镜像。由组合根 {@code RagPortsConfig#wrapHybrid} 注入与 Hybrid 同一份索引。
+     */
     private InMemoryKeywordIndex keywordMirror;
 
-    private IngestProgressListener progressListener;
+    /**
+     * 大文件入库进度。按调用线程保存，并发入库互不覆盖；传 null 表示本线程结束。
+     */
+    private static final ThreadLocal<IngestProgressListener> PROGRESS = new ThreadLocal<>();
 
     public SimpleKnowledgeRetrievePort(SimpleKnowledge knowledge) {
         this(knowledge, null, null, 0.0, ChatKnowledgeReaders.CHUNK_SIZE, ChatKnowledgeReaders.OVERLAP);
@@ -78,6 +122,10 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         this(knowledge, store, null, 0.0, ChatKnowledgeReaders.CHUNK_SIZE, ChatKnowledgeReaders.OVERLAP);
     }
 
+    /**
+     * @param closer 可关的 store（pg）；内存库可为 null
+     * @param embeddingStore 用于 delete / 类型判断；应与 knowledge 内 store 同一对象
+     */
     SimpleKnowledgeRetrievePort(
             SimpleKnowledge knowledge,
             AutoCloseable closer,
@@ -93,20 +141,51 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         this.chunkOverlap = Math.max(0, chunkOverlap);
     }
 
-    /** 向量写入成功后同步一份到关键词，供 Hybrid RRF。 */
+    /**
+     * 挂上关键词镜像。应在首次入库 / 重建索引之前调用，否则早期写入不会进 Hybrid 的关键词侧。
+     */
     public void mirrorKeyword(InMemoryKeywordIndex index) {
         this.keywordMirror = index;
     }
 
     @Override
     public void setIngestProgressListener(IngestProgressListener listener) {
-        this.progressListener = listener;
+        if (listener == null) {
+            PROGRESS.remove();
+        } else {
+            PROGRESS.set(listener);
+        }
     }
 
+    /**
+     * 用与入库相同的 Reader 抽出纯文本块。embedding 失败后的关键词降级（含 PDF）走这里。
+     */
+    public static List<String> readPlainTexts(String filename, byte[] content, int chunkSize, int chunkOverlap) {
+        List<Document> docs = ChatKnowledgeReaders.read(filename, content, chunkSize, chunkOverlap);
+        if (docs == null || docs.isEmpty()) {
+            return List.of();
+        }
+        List<String> texts = new ArrayList<>();
+        for (Document doc : docs) {
+            String text = textOf(doc);
+            if (!text.isBlank()) {
+                texts.add(text);
+            }
+        }
+        return List.copyOf(texts);
+    }
+
+    /** 默认：内存向量库 + 阈值 0 + 默认切块。适合单测与无 PG 的本地演示。 */
     public static SimpleKnowledgeRetrievePort create(EmbeddingModel embedding) {
         return create(embedding, null, 0.0, ChatKnowledgeReaders.CHUNK_SIZE, ChatKnowledgeReaders.OVERLAP);
     }
 
+    /**
+     * 组装 {@link SimpleKnowledge}。{@code store == null} 时按 embedding 维度建 {@link InMemoryStore}。
+     *
+     * @param scoreThreshold 低于此分的命中不返回
+     * @param chunkSize / chunkOverlap 仅影响后续 {@link #addFile}
+     */
     public static SimpleKnowledgeRetrievePort create(
             EmbeddingModel embedding, VDBStoreBase store, double scoreThreshold, int chunkSize, int chunkOverlap) {
         Objects.requireNonNull(embedding, "embedding");
@@ -129,6 +208,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return create(embedding, store, 0.0, ChatKnowledgeReaders.CHUNK_SIZE, ChatKnowledgeReaders.OVERLAP);
     }
 
+    /** DashScope embedding + 内存向量库。 */
     public static SimpleKnowledgeRetrievePort dashScope(String apiKey) {
         return dashScope(apiKey, ChatEmbeddingSettings.defaults());
     }
@@ -147,8 +227,10 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     }
 
     /**
-     * DashScope embedding + 官方 {@link PgVectorStore}。{@code build()} 会 {@code CREATE EXTENSION vector} 并建表，
-     * 写入是主键 upsert。
+     * DashScope embedding + 官方 {@link PgVectorStore}。
+     *
+     * <p>{@code build()} 会 {@code CREATE EXTENSION vector} 并建表；写入按 docId upsert。库不存在时先
+     * {@link ChatPgVectorSettings#ensureDatabase()}。
      */
     public static SimpleKnowledgeRetrievePort dashScopePg(String apiKey, ChatPgVectorSettings pg) {
         return dashScopePg(apiKey, pg, ChatEmbeddingSettings.defaults());
@@ -197,6 +279,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return create(model, store, scoreThreshold, chunkSize, chunkOverlap);
     }
 
+    /** 构造百炼 {@link DashScopeTextEmbedding}；模型名与维度来自 {@link ChatEmbeddingSettings}。 */
     static EmbeddingModel dashScopeEmbedding(String apiKey, ChatEmbeddingSettings embedding) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("dream-scope.model.api-key required");
@@ -213,16 +296,23 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return embedding == null ? ChatEmbeddingSettings.DEFAULT_MODEL : embedding.modelName();
     }
 
+    /** 便捷入口：不指定块 id。 */
     public String addText(String text, String source, String docType) {
         return addText(null, text, source, docType);
     }
 
+    /**
+     * 入库一段文本（整段一块，不再切分）。
+     *
+     * <p>payload 写入 {@code source} / {@code docType}，检索命中与按源删除都依赖它们。失败抛
+     * {@link IllegalStateException}（额度不足等由上层 Hybrid / RagPortsConfig 识别）。
+     */
     @Override
     public String addText(String id, String text, String source, String docType) {
         if (text == null || text.isBlank()) {
             return "";
         }
-        String docId = id == null || id.isBlank() ? "sk-" + seq.incrementAndGet() : id.trim();
+        String docId = id == null || id.isBlank() ? "sk-" + UUID.randomUUID().toString().replace("-", "") : id.trim();
         DocumentMetadata meta = DocumentMetadata.builder()
                 .content(TextBlock.builder().text(text.trim()).build())
                 .docId(docId)
@@ -245,6 +335,17 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         }
     }
 
+    /**
+     * 文件入库：官方 Reader 切块 → 打稳定 id / source → 分批 embed 写入。
+     *
+     * <ol>
+     *   <li>先 {@link ChatKnowledgeReaders#read}；非法类型抛 {@link IllegalArgumentException}。
+     *   <li>同 {@code source} 先 {@link #deleteBySource}，避免重传叠两套向量。
+     *   <li>块 id 形如 {@code base}、{@code base-2}…（见 {@link KnowledgeTextFile#chunkIds}）。
+     *   <li>每批 8 块写入，降低大 PDF 一次请求超时概率；进度回调 {@code reading} / {@code embedding}。
+     *   <li>embed 失败抛 {@link EmbeddingIngestException}（已带抽出的正文），Hybrid 可回退关键词。
+     * </ol>
+     */
     @Override
     public List<String> addFile(String id, String filename, byte[] content, String source, String docType) {
         List<Document> raw;
@@ -277,6 +378,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                 filename,
                 ChatKnowledgeReaders.readerName(filename),
                 stamped.size());
+        // 大文件分批：整本一次 block 容易卡死 HTTP/Apifox，也更容易撞 embedding 超时。
         int batchSize = 8;
         try {
             for (int from = 0; from < stamped.size(); from += batchSize) {
@@ -295,11 +397,15 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                     src);
             return List.copyOf(ids);
         } catch (RuntimeException ex) {
+            // 正文已抽出：把 texts 带给上层，避免额度不足时整份 PDF 白读。
             throw new EmbeddingIngestException(
                     "simple knowledge ingest failed", base, src, type, texts, ex);
         }
     }
 
+    /**
+     * 当前进程见过的来源及块数。只反映 {@link #sourceIds}；空 source 不列出。
+     */
     @Override
     public List<KnowledgeSource> sources() {
         List<KnowledgeSource> out = new ArrayList<>();
@@ -312,6 +418,11 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return List.copyOf(out);
     }
 
+    /**
+     * 按 source 删除向量块与关键词镜像。返回成功从向量库删掉的条数（镜像删除不计入）。
+     *
+     * <p>若重启后未 {@link #rebuildSourceIndexFromStore()}，{@code sourceIds} 为空则删不到旧向量。
+     */
     @Override
     public int deleteBySource(String source) {
         String src = source == null ? "" : source;
@@ -338,9 +449,11 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     }
 
     /**
-     * 从 pgvector 表重建 {@code source → docIds}。进程重启后列表/按源删除依赖此方法。
+     * 从 pgvector 表重建 {@code source → docIds}，并在已挂镜像时回填关键词正文。
      *
-     * @return 恢复的文档块数
+     * <p>仅 pg 有效；内存库返回 0。组合根在「表非空、跳过 seed」时调用，保证重启后列表/删除/混合检索仍可用。
+     *
+     * @return 恢复的文档块行数；查询失败返回 0（不抛）
      */
     public int rebuildSourceIndexFromStore() {
         if (!(store instanceof PgVectorStore pg)) {
@@ -394,6 +507,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return rows;
     }
 
+    /** 单块镜像；失败只打日志。 */
     private void mirrorKeywordChunk(String id, String text, String source, String docType) {
         if (keywordMirror == null || text == null || text.isBlank()) {
             return;
@@ -405,6 +519,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         }
     }
 
+    /** 整文件镜像：先清同 source，再按块写入，与向量侧覆盖语义一致。 */
     private void mirrorKeywordChunks(List<String> ids, List<String> texts, String source, String docType) {
         if (keywordMirror == null || texts == null || texts.isEmpty()) {
             return;
@@ -420,7 +535,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     }
 
     private void notifyProgress(String stage, int done, int total) {
-        IngestProgressListener listener = progressListener;
+        IngestProgressListener listener = PROGRESS.get();
         if (listener == null) {
             return;
         }
@@ -437,6 +552,10 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return text == null ? "" : text;
     }
 
+    /**
+     * 给 Reader 产出的块盖上稳定 id 与 payload。AgentScope Reader 自带的 id 不可靠，覆盖写入依赖我们自己的
+     * {@code docId}/{@code source}。
+     */
     private static Document stamp(Document doc, String docId, String source, String docType) {
         DocumentMetadata old = doc == null ? null : doc.getMetadata();
         ContentBlock content = old == null || old.getContent() == null
@@ -452,7 +571,9 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return new Document(meta);
     }
 
-    /** pgvector 表里已有行则 true；内存库总是 false（每次启动再灌演示语料）。 */
+    /**
+     * pg 表是否已有数据。内存库恒为 false，以便每次启动灌演示语料；pg 有行则跳过 seed，避免重复 upsert。
+     */
     public boolean hasStoredDocuments() {
         if (!(store instanceof PgVectorStore pg)) {
             return false;
@@ -467,11 +588,17 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         }
     }
 
+    /** SQL 标识符双引号转义，避免 schema/table 名注入。 */
     private static String quoteIdent(String ident) {
         String raw = ident == null || ident.isBlank() ? "public" : ident;
         return "\"" + raw.replace("\"", "\"\"") + "\"";
     }
 
+    /**
+     * 向量相似度检索。只走本库，不做关键词融合；融合在外层 Hybrid。
+     *
+     * @param topK 上限条数，同时写入 {@link RetrieveConfig#limit}
+     */
     @Override
     public List<RetrieveHit> retrieve(String query, int topK) {
         if (query == null || query.isBlank() || topK <= 0) {
@@ -502,6 +629,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         return List.copyOf(hits);
     }
 
+    /** 关掉 pg 连接等；Spring {@code destroyMethod=close} 会调到这里。 */
     @Override
     public void close() {
         if (store == null) {
@@ -514,6 +642,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         }
     }
 
+    /** AgentScope Document → domain {@link RetrieveHit}；source/docType 优先读 payload。 */
     private static RetrieveHit toHit(Document doc) {
         DocumentMetadata meta = doc.getMetadata();
         String text = meta == null ? "" : meta.getContentText();

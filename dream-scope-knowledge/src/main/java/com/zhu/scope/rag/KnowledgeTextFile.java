@@ -13,7 +13,7 @@ public final class KnowledgeTextFile {
 
     public static final int MAX_BYTES = 20 * 1024 * 1024;
 
-    public static final int CHUNK_CHARS = 1500;
+    public static final int CHUNK_CHARS = 2000;
 
     public static final int CHUNK_OVERLAP = 200;
 
@@ -69,17 +69,24 @@ public final class KnowledgeTextFile {
     }
 
     public static List<String> chunks(String text) {
+        return chunks(text, CHUNK_CHARS, CHUNK_OVERLAP);
+    }
+
+    /** 与向量 Reader 共用同一组切块参数，避免 RRF 两侧块边界不一致。 */
+    public static List<String> chunks(String text, int chunkChars, int overlap) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
+        int size = chunkChars > 0 ? chunkChars : CHUNK_CHARS;
+        int over = Math.max(0, Math.min(overlap, size - 1));
         String body = text.trim();
-        if (body.length() <= CHUNK_CHARS) {
+        if (body.length() <= size) {
             return List.of(body);
         }
         List<String> out = new ArrayList<>();
-        int step = CHUNK_CHARS - CHUNK_OVERLAP;
+        int step = Math.max(1, size - over);
         for (int start = 0; start < body.length(); start += step) {
-            int end = Math.min(body.length(), start + CHUNK_CHARS);
+            int end = Math.min(body.length(), start + size);
             out.add(body.substring(start, end));
             if (end >= body.length()) {
                 break;

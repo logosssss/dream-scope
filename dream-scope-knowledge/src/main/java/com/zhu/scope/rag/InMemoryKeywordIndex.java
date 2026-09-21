@@ -5,14 +5,13 @@ import com.zhu.scope.knowledge.RetrievePort;
 import com.zhu.scope.knowledge.KnowledgeSource;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 进程内关键词检索。无向量库；入库后按词项重叠打分。
@@ -21,19 +20,27 @@ public final class InMemoryKeywordIndex implements RetrievePort {
 
     private final CopyOnWriteArrayList<Chunk> chunks = new CopyOnWriteArrayList<>();
 
-    private final AtomicInteger seq = new AtomicInteger();
-
     private final double minScore;
+
+    private final int chunkChars;
+
+    private final int chunkOverlap;
 
     public InMemoryKeywordIndex() {
         this(0.0);
     }
 
     public InMemoryKeywordIndex(double minScore) {
+        this(minScore, KnowledgeTextFile.CHUNK_CHARS, KnowledgeTextFile.CHUNK_OVERLAP);
+    }
+
+    public InMemoryKeywordIndex(double minScore, int chunkChars, int chunkOverlap) {
         if (minScore < 0.0 || minScore > 1.0) {
             throw new IllegalArgumentException("minScore must be in [0, 1]");
         }
         this.minScore = minScore;
+        this.chunkChars = chunkChars > 0 ? chunkChars : KnowledgeTextFile.CHUNK_CHARS;
+        this.chunkOverlap = Math.max(0, chunkOverlap);
     }
 
     public void ingest(String text, String source, String docType) {
@@ -45,7 +52,7 @@ public final class InMemoryKeywordIndex implements RetrievePort {
         if (text == null || text.isBlank()) {
             return "";
         }
-        String docId = id == null || id.isBlank() ? "kw-" + seq.incrementAndGet() : id.trim();
+        String docId = id == null || id.isBlank() ? "kw-" + UUID.randomUUID().toString().replace("-", "") : id.trim();
         chunks.add(new Chunk(
                 docId,
                 text.trim(),
@@ -61,7 +68,7 @@ public final class InMemoryKeywordIndex implements RetrievePort {
             throw new IllegalArgumentException("keyword index only supports text files");
         }
         String text = KnowledgeTextFile.decodeUtf8(content);
-        List<String> parts = KnowledgeTextFile.chunks(text);
+        List<String> parts = KnowledgeTextFile.chunks(text, chunkChars, chunkOverlap);
         if (parts.isEmpty()) {
             throw new IllegalArgumentException("file text required");
         }
@@ -79,9 +86,21 @@ public final class InMemoryKeywordIndex implements RetrievePort {
     @Override
     public int deleteBySource(String source) {
         String src = source == null ? "" : source;
-        int before = chunks.size();
-        chunks.removeIf(chunk -> src.equals(chunk.source()));
-        return before - chunks.size();
+        List<Chunk> kept = new ArrayList<>();
+        int removed = 0;
+        for (Chunk chunk : chunks) {
+            if (src.equals(chunk.source())) {
+                removed++;
+            } else {
+                kept.add(chunk);
+            }
+        }
+        if (removed == 0) {
+            return 0;
+        }
+        chunks.clear();
+        chunks.addAll(kept);
+        return removed;
     }
 
     @Override
@@ -145,13 +164,7 @@ public final class InMemoryKeywordIndex implements RetrievePort {
     }
 
     static Set<String> terms(String query) {
-        Set<String> out = new LinkedHashSet<>();
-        for (String raw : query.toLowerCase(Locale.ROOT).split("[\\s\\p{Punct}]+")) {
-            if (raw.length() >= 2) {
-                out.add(raw);
-            }
-        }
-        return out;
+        return QueryTerms.of(query);
     }
 
     private record Chunk(String id, String text, String source, String docType) {}

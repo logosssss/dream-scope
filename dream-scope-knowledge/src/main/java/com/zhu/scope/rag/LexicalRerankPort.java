@@ -4,7 +4,6 @@ import com.zhu.scope.knowledge.RerankPort;
 import com.zhu.scope.knowledge.RetrieveHit;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -46,15 +45,6 @@ public final class LexicalRerankPort implements RerankPort {
     }
 
     static Set<String> terms(String query) {
-        Set<String> out = new LinkedHashSet<>();
-        if (query == null || query.isBlank()) {
-            return out;
-        }
-        for (String raw : query.toLowerCase(Locale.ROOT).split("[\\s\\p{Punct}]+")) {
-            if (raw.length() >= 2) {
-                out.add(raw);
-            }
-        }
-        return out;
+        return QueryTerms.of(query);
     }
 }
