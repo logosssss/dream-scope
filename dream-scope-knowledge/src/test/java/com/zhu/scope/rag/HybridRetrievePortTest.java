@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.zhu.scope.knowledge.EmbeddingIngestException;
+import com.zhu.scope.knowledge.IngestedChunk;
 import com.zhu.scope.knowledge.RetrieveHit;
 import com.zhu.scope.knowledge.RetrievePort;
 import java.nio.charset.StandardCharsets;
@@ -62,6 +63,32 @@ class HybridRetrievePortTest {
     }
 
     @Test
+    void successfulAddMirrorsKeyword() {
+        RetrievePort primary = new RetrievePort() {
+            @Override
+            public List<RetrieveHit> retrieve(String query, int topK) {
+                return List.of();
+            }
+
+            @Override
+            public String addText(String id, String text, String source, String docType) {
+                return "demo";
+            }
+
+            @Override
+            public List<IngestedChunk> addFileChunks(
+                    String id, String filename, byte[] content, String source, String docType) {
+                return List.of(new IngestedChunk("note", "dream-scope 运行时", "note.md", "file"));
+            }
+        };
+        HybridRetrievePort hybrid = new HybridRetrievePort(primary);
+        assertEquals("demo", hybrid.addText("demo", "dream-scope Redis 会话", "manual", "note"));
+        assertEquals("demo", hybrid.keywordIndex().retrieve("Redis", 1).get(0).id());
+        assertEquals(List.of("note"), hybrid.addFile(null, "note.md", new byte[] {1}, "note.md", "file"));
+        assertFalse(hybrid.keywordIndex().retrieve("运行时", 1).isEmpty());
+    }
+
+    @Test
     void addTextFallsBackOnEmbeddingQuota() {
         RetrievePort primary = new RetrievePort() {
             @Override
@@ -106,7 +133,7 @@ class HybridRetrievePortTest {
         HybridRetrievePort hybrid = new HybridRetrievePort(primary, keyword);
         hybrid.addText("a", "alpha Redis", "same.md", "note");
         keyword.addText("b", "beta Redis", "same.md", "note");
-        assertEquals(2, hybrid.deleteBySource("same.md"));
+        assertEquals(3, hybrid.deleteBySource("same.md"));
         assertTrue(hybrid.retrieve("Redis", 3).isEmpty());
     }
 

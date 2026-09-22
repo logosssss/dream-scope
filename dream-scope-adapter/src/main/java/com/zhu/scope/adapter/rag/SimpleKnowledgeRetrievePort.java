@@ -2,11 +2,11 @@ package com.zhu.scope.adapter.rag;
 
 import com.zhu.scope.adapter.LogText;
 import com.zhu.scope.knowledge.EmbeddingIngestException;
+import com.zhu.scope.knowledge.IngestedChunk;
 import com.zhu.scope.knowledge.IngestProgressListener;
 import com.zhu.scope.knowledge.KnowledgeSource;
 import com.zhu.scope.knowledge.RetrieveHit;
 import com.zhu.scope.knowledge.RetrievePort;
-import com.zhu.scope.rag.InMemoryKeywordIndex;
 import com.zhu.scope.rag.KnowledgeTextFile;
 import io.agentscope.core.embedding.EmbeddingModel;
 import io.agentscope.core.message.ContentBlock;
@@ -59,8 +59,8 @@ import org.slf4j.LoggerFactory;
  *
  * <ul>
  *   <li>{@link #sourceIds}：进程内 {@code source → docId[]}，支撑列表、按源覆盖删除。内存库随进程清空；
- *       pg 重启后靠 {@link #rebuildSourceIndexFromStore()} 从 payload 重建。
- *   <li>{@link #keywordMirror}：向量写入成功后同步正文，供 Hybrid RRF；镜像失败不回滚向量。
+ *       pg 重启后靠 {@link #rebuildSourceIndexFromStore()} 从 payload 重建，正文经 {@link #storedChunks()}
+ *       交给 Hybrid 回填关键词。本类不持有关键词索引。
  * </ul>
  *
  * @see <a href="https://java.agentscope.io/v2/en/integration/rag/simple.html">Simple Knowledge</a>
@@ -104,10 +104,8 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
      */
     private final Map<String, List<String>> sourceIds = new ConcurrentHashMap<>();
 
-    /**
-     * 可选关键词镜像。由组合根 {@code RagPortsConfig#wrapHybrid} 注入与 Hybrid 同一份索引。
-     */
-    private InMemoryKeywordIndex keywordMirror;
+    /** {@link #rebuildSourceIndexFromStore()} 导出的正文，供 Hybrid 回填关键词。 */
+    private List<IngestedChunk> exported = List.of();
 
     /**
      * 大文件入库进度。按调用线程保存，并发入库互不覆盖；传 null 表示本线程结束。
@@ -141,11 +139,9 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         this.chunkOverlap = Math.max(0, chunkOverlap);
     }
 
-    /**
-     * 挂上关键词镜像。应在首次入库 / 重建索引之前调用，否则早期写入不会进 Hybrid 的关键词侧。
-     */
-    public void mirrorKeyword(InMemoryKeywordIndex index) {
-        this.keywordMirror = index;
+    /** 最近一次从 pg 导出的块。内存库或尚未重建时为空。 */
+    public List<IngestedChunk> storedChunks() {
+        return exported;
     }
 
     @Override
@@ -327,7 +323,6 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                 next.add(docId);
                 return List.copyOf(next);
             });
-            mirrorKeywordChunk(docId, text.trim(), source == null ? "" : source, docType == null ? "" : docType.trim());
             log.info("simple rag ingest id={} source={} chars={}", docId, source, text.trim().length());
             return docId;
         } catch (RuntimeException ex) {
@@ -348,6 +343,16 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
      */
     @Override
     public List<String> addFile(String id, String filename, byte[] content, String source, String docType) {
+        List<IngestedChunk> written = addFileChunks(id, filename, content, source, docType);
+        List<String> ids = new ArrayList<>(written.size());
+        for (IngestedChunk chunk : written) {
+            ids.add(chunk.id());
+        }
+        return List.copyOf(ids);
+    }
+
+    @Override
+    public List<IngestedChunk> addFileChunks(String id, String filename, byte[] content, String source, String docType) {
         List<Document> raw;
         try {
             raw = ChatKnowledgeReaders.read(filename, content, chunkSize, chunkOverlap);
@@ -388,14 +393,17 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                 log.info("simple rag ingest file progress name={} {}/{}", filename, to, stamped.size());
             }
             sourceIds.put(src, List.copyOf(ids));
-            mirrorKeywordChunks(ids, texts, src, type);
+            List<IngestedChunk> written = new ArrayList<>(ids.size());
+            for (int i = 0; i < ids.size(); i++) {
+                written.add(new IngestedChunk(ids.get(i), texts.get(i), src, type));
+            }
             log.info(
                     "simple rag ingest file done reader={} name={} chunks={} source={}",
                     ChatKnowledgeReaders.readerName(filename),
                     filename,
                     stamped.size(),
                     src);
-            return List.copyOf(ids);
+            return List.copyOf(written);
         } catch (RuntimeException ex) {
             // 正文已抽出：把 texts 带给上层，避免额度不足时整份 PDF 白读。
             throw new EmbeddingIngestException(
@@ -419,7 +427,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     }
 
     /**
-     * 按 source 删除向量块与关键词镜像。返回成功从向量库删掉的条数（镜像删除不计入）。
+     * 按 source 删除向量块。返回成功从向量库删掉的条数。关键词由 Hybrid 自己删。
      *
      * <p>若重启后未 {@link #rebuildSourceIndexFromStore()}，{@code sourceIds} 为空则删不到旧向量。
      */
@@ -427,9 +435,6 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     public int deleteBySource(String source) {
         String src = source == null ? "" : source;
         List<String> ids = sourceIds.remove(src);
-        if (keywordMirror != null) {
-            keywordMirror.deleteBySource(src);
-        }
         if (ids == null || ids.isEmpty() || embeddingStore == null) {
             return 0;
         }
@@ -449,7 +454,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
     }
 
     /**
-     * 从 pgvector 表重建 {@code source → docIds}，并在已挂镜像时回填关键词正文。
+     * 从 pgvector 表重建 {@code source → docIds}，正文留在 {@link #storedChunks()} 供 Hybrid 回填。
      *
      * <p>仅 pg 有效；内存库返回 0。组合根在「表非空、跳过 seed」时调用，保证重启后列表/删除/混合检索仍可用。
      *
@@ -464,7 +469,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                 + "."
                 + quoteIdent(pg.getTableName());
         Map<String, List<String>> rebuilt = new ConcurrentHashMap<>();
-        List<Object[]> keywordRows = new ArrayList<>();
+        List<IngestedChunk> chunks = new ArrayList<>();
         int rows = 0;
         try (Statement statement = pg.getConnection().createStatement();
                 ResultSet rs = statement.executeQuery(sql)) {
@@ -482,7 +487,7 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
                     next.add(docId);
                     return next;
                 });
-                keywordRows.add(new Object[] {docId, content == null ? "" : content, src, docType == null ? "" : docType});
+                chunks.add(new IngestedChunk(docId, content == null ? "" : content, src, docType == null ? "" : docType));
                 rows++;
             }
         } catch (Exception ex) {
@@ -491,47 +496,9 @@ public final class SimpleKnowledgeRetrievePort implements RetrievePort {
         }
         sourceIds.clear();
         rebuilt.forEach((source, ids) -> sourceIds.put(source, List.copyOf(ids)));
-        if (keywordMirror != null) {
-            for (String source : rebuilt.keySet()) {
-                keywordMirror.deleteBySource(source);
-            }
-            for (Object[] row : keywordRows) {
-                String text = (String) row[1];
-                if (text.isBlank()) {
-                    continue;
-                }
-                keywordMirror.addText((String) row[0], text, (String) row[2], (String) row[3]);
-            }
-        }
+        exported = List.copyOf(chunks);
         log.info("simple rag rebuilt source index rows={} sources={}", rows, sourceIds.size());
         return rows;
-    }
-
-    /** 单块镜像；失败只打日志。 */
-    private void mirrorKeywordChunk(String id, String text, String source, String docType) {
-        if (keywordMirror == null || text == null || text.isBlank()) {
-            return;
-        }
-        try {
-            keywordMirror.addText(id, text, source, docType);
-        } catch (RuntimeException ex) {
-            log.warn("keyword mirror addText failed id={}: {}", id, ex.getMessage());
-        }
-    }
-
-    /** 整文件镜像：先清同 source，再按块写入，与向量侧覆盖语义一致。 */
-    private void mirrorKeywordChunks(List<String> ids, List<String> texts, String source, String docType) {
-        if (keywordMirror == null || texts == null || texts.isEmpty()) {
-            return;
-        }
-        try {
-            keywordMirror.deleteBySource(source);
-            for (int i = 0; i < texts.size(); i++) {
-                keywordMirror.addText(ids.get(i), texts.get(i), source, docType);
-            }
-        } catch (RuntimeException ex) {
-            log.warn("keyword mirror addFile failed source={}: {}", source, ex.getMessage());
-        }
     }
 
     private void notifyProgress(String stage, int done, int total) {

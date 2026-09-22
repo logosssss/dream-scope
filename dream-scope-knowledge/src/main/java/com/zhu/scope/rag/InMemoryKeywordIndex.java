@@ -83,6 +83,10 @@ public final class InMemoryKeywordIndex implements RetrievePort {
         return ids;
     }
 
+    public void clear() {
+        chunks.clear();
+    }
+
     @Override
     public int deleteBySource(String source) {
         String src = source == null ? "" : source;

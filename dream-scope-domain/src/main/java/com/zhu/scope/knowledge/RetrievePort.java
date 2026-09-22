@@ -62,6 +62,22 @@ public interface RetrievePort {
         throw new UnsupportedOperationException("addFile not supported");
     }
 
+    /**
+     * 文件入库并带回正文。默认只转 {@link #addFile}，正文为空。
+     * 向量实现应返回真实切块，供上层把关键词镜像写在调用方一侧。
+     */
+    default List<IngestedChunk> addFileChunks(String id, String filename, byte[] content, String source, String docType) {
+        List<String> ids = addFile(id, filename, content, source, docType);
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        List<IngestedChunk> out = new java.util.ArrayList<>(ids.size());
+        for (String docId : ids) {
+            out.add(new IngestedChunk(docId, "", source == null ? "" : source, docType == null ? "" : docType));
+        }
+        return List.copyOf(out);
+    }
+
     /** 删掉同一 source 下已有块，避免同名文件重复入库。 */
     default int deleteBySource(String source) {
         return 0;

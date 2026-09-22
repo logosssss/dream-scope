@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.zhu.scope.knowledge.RetrieveHit;
-import com.zhu.scope.rag.InMemoryKeywordIndex;
 import io.agentscope.core.embedding.EmbeddingModel;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
@@ -59,16 +58,6 @@ class SimpleKnowledgeRetrievePortTest {
         port.addText("dream-scope 运行时", "intro", "intro");
         assertTrue(port.retrieve("  ", 3).isEmpty());
         assertTrue(port.retrieve("dream-scope", 0).isEmpty());
-    }
-
-    @Test
-    void mirrorsSuccessfulIngestToKeyword() {
-        SimpleKnowledgeRetrievePort port = SimpleKnowledgeRetrievePort.create(new HashEmbeddingModel(32));
-        InMemoryKeywordIndex keyword = new InMemoryKeywordIndex();
-        port.mirrorKeyword(keyword);
-        port.addText("demo", "dream-scope Redis 会话", "manual", "note");
-        assertEquals(1, keyword.retrieve("Redis", 3).size());
-        assertEquals("demo", keyword.retrieve("Redis", 3).get(0).id());
     }
 
     @Test

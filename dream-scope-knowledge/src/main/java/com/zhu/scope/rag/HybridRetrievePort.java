@@ -2,6 +2,7 @@ package com.zhu.scope.rag;
 
 import com.zhu.scope.knowledge.EmbeddingIngestException;
 import com.zhu.scope.knowledge.FileChunkReader;
+import com.zhu.scope.knowledge.IngestedChunk;
 import com.zhu.scope.knowledge.IngestProgressListener;
 import com.zhu.scope.knowledge.KnowledgeSource;
 import com.zhu.scope.knowledge.RetrieveHit;
@@ -16,10 +17,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 真混合检索：向量与关键词双路召回，RRF 融合。embedding 失败时正文仍进关键词。
+ * 真混合检索：向量与关键词双路召回，RRF 融合。
  *
- * <p>成功写入向量库后的关键词镜像由 {@code SimpleKnowledgeRetrievePort#mirrorKeyword} 负责，
- * 本类在失败路径写入关键词，检索时双路合并。
+ * <p>关键词只由本类写入：向量成功后把返回的正文镜像进来；embedding 失败则只写关键词。
+ * 向量端口不再反向持有本索引。
  */
 public final class HybridRetrievePort implements RetrievePort {
 
@@ -164,7 +165,11 @@ public final class HybridRetrievePort implements RetrievePort {
     @Override
     public String addText(String id, String text, String source, String docType) {
         try {
-            return primary.addText(id, text, source, docType);
+            String docId = primary.addText(id, text, source, docType);
+            if (docId != null && !docId.isBlank() && text != null && !text.isBlank()) {
+                mirrorChunk(docId, text.trim(), source, docType);
+            }
+            return docId == null ? "" : docId;
         } catch (RuntimeException ex) {
             if (!isEmbeddingFailure(ex)) {
                 throw ex;
@@ -177,7 +182,9 @@ public final class HybridRetrievePort implements RetrievePort {
     @Override
     public List<String> addFile(String id, String filename, byte[] content, String source, String docType) {
         try {
-            return primary.addFile(id, filename, content, source, docType);
+            List<IngestedChunk> written = primary.addFileChunks(id, filename, content, source, docType);
+            mirrorChunks(written);
+            return idsOf(written);
         } catch (EmbeddingIngestException ex) {
             log.warn(
                     "hybrid addFile embedding failed, keyword fallback name={} chunks={}: {}",
@@ -221,6 +228,71 @@ public final class HybridRetrievePort implements RetrievePort {
     @Override
     public void close() {
         primary.close();
+    }
+
+    /** pg 重启后用向量库导出的块填满关键词侧。先清空，避免旧镜像残留。 */
+    public int refillKeyword(List<IngestedChunk> chunks) {
+        keyword.clear();
+        if (chunks == null || chunks.isEmpty()) {
+            return 0;
+        }
+        int n = 0;
+        for (IngestedChunk chunk : chunks) {
+            if (chunk == null || chunk.id() == null || chunk.id().isBlank() || chunk.text() == null || chunk.text().isBlank()) {
+                continue;
+            }
+            keyword.addText(chunk.id(), chunk.text(), chunk.source(), chunk.docType());
+            n++;
+        }
+        return n;
+    }
+
+    private void mirrorChunk(String id, String text, String source, String docType) {
+        try {
+            keyword.addText(id, text, source, docType);
+        } catch (RuntimeException ex) {
+            log.warn("keyword mirror addText failed id={}: {}", id, ex.getMessage());
+        }
+    }
+
+    private void mirrorChunks(List<IngestedChunk> written) {
+        if (written == null || written.isEmpty()) {
+            return;
+        }
+        IngestedChunk first = null;
+        for (IngestedChunk chunk : written) {
+            if (chunk != null && chunk.text() != null && !chunk.text().isBlank()) {
+                first = chunk;
+                break;
+            }
+        }
+        if (first == null) {
+            return;
+        }
+        try {
+            keyword.deleteBySource(first.source() == null ? "" : first.source());
+            for (IngestedChunk chunk : written) {
+                if (chunk == null || chunk.text() == null || chunk.text().isBlank()) {
+                    continue;
+                }
+                keyword.addText(chunk.id(), chunk.text(), chunk.source(), chunk.docType());
+            }
+        } catch (RuntimeException ex) {
+            log.warn("keyword mirror addFile failed source={}: {}", first.source(), ex.getMessage());
+        }
+    }
+
+    private static List<String> idsOf(List<IngestedChunk> written) {
+        if (written == null || written.isEmpty()) {
+            return List.of();
+        }
+        List<String> ids = new ArrayList<>(written.size());
+        for (IngestedChunk chunk : written) {
+            if (chunk != null && chunk.id() != null && !chunk.id().isBlank()) {
+                ids.add(chunk.id());
+            }
+        }
+        return List.copyOf(ids);
     }
 
     List<String> addKeywordChunks(String baseId, List<String> texts, String source, String docType) {

@@ -180,7 +180,7 @@ class PortsConfigRagTest {
                 ignored -> existing);
         assertInstanceOf(AdvancedRetrievePort.class, port);
         verify(existing).rebuildSourceIndexFromStore();
-        verify(existing).mirrorKeyword(any());
+        verify(existing).storedChunks();
         verify(existing, never()).addText(any(), any(), any(), any());
     }
 
@@ -194,7 +194,7 @@ class PortsConfigRagTest {
         when(existing.rebuildSourceIndexFromStore()).thenReturn(0);
         RetrievePort port = PortsConfig.createRetrievePort(props, key -> existing);
         assertInstanceOf(AdvancedRetrievePort.class, port);
-        verify(existing).mirrorKeyword(any());
+        verify(existing).storedChunks();
         verify(existing, never()).addText(any(), any(), any(), any());
     }
 
