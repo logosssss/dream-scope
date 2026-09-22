@@ -49,6 +49,18 @@ class AgentInvokeControllerTest {
                 if (request.structured()) {
                     return new AgentInvokeResult(id(), "stub:" + request.input(), 0, 0, java.util.Map.of("city", "大阪"));
                 }
+                if ("tool".equals(request.input())) {
+                    return new AgentInvokeResult(
+                            id(),
+                            "stub:tool",
+                            1,
+                            2,
+                            null,
+                            false,
+                            java.util.List.of(
+                                    new com.zhu.scope.agent.AgentTraceStep("toolCall", "retrieve", "{\"q\":\"tool\"}"),
+                                    new com.zhu.scope.agent.AgentTraceStep("toolResult", "retrieve", "[1] hit")));
+                }
                 return new AgentInvokeResult(id(), "stub:" + request.input());
             }
 
@@ -80,7 +92,22 @@ class AgentInvokeControllerTest {
                 .andExpect(jsonPath("$.output").value("stub:你好"))
                 .andExpect(jsonPath("$.inputTokens").value(0))
                 .andExpect(jsonPath("$.outputTokens").value(0))
-                .andExpect(jsonPath("$.planActive").value(false));
+                .andExpect(jsonPath("$.planActive").value(false))
+                .andExpect(jsonPath("$.trace").isArray())
+                .andExpect(jsonPath("$.trace").isEmpty());
+    }
+
+    @Test
+    void invokeReturnsTraceSteps() throws Exception {
+        mockMvc.perform(post("/api/agents/invoke")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"input\":\"tool\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.trace[0].type").value("toolCall"))
+                .andExpect(jsonPath("$.trace[0].name").value("retrieve"))
+                .andExpect(jsonPath("$.trace[0].text").value("{\"q\":\"tool\"}"))
+                .andExpect(jsonPath("$.trace[1].type").value("toolResult"))
+                .andExpect(jsonPath("$.trace[1].text").value("[1] hit"));
     }
 
     @Test

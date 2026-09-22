@@ -44,7 +44,13 @@ public class DreamScopeProperties {
     @Getter
     public static class McpSettings {
 
-        private List<McpServerSettings> servers = new ArrayList<>();
+        @Setter
+    private boolean demoEnabled = true;
+
+    @Setter
+    private int demoPort = 8093;
+
+    private List<McpServerSettings> servers = new ArrayList<>();
 
         public void setServers(List<McpServerSettings> servers) {
             this.servers = servers == null ? new ArrayList<>() : servers;

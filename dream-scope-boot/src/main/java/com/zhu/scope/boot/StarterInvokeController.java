@@ -1,6 +1,5 @@
 package com.zhu.scope.boot;
 
-import com.zhu.scope.adapter.event.StreamCancelHook;
 import com.zhu.scope.agent.AgentEvent;
 import com.zhu.scope.agent.AgentHandler;
 import com.zhu.scope.agent.AgentInvokeRequest;
@@ -22,7 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * 与 web 相同的 {@code /api/agents/invoke}、{@code /stream}，只认 domain 类型。
+ * 与 web 相同的 {@code /api/agents/invoke}、{@code /stream}。出参就是 {@link AgentInvokeResult}。
  */
 @RestController
 public class StarterInvokeController {
@@ -39,19 +38,12 @@ public class StarterInvokeController {
     }
 
     @PostMapping("/api/agents/invoke")
-    public StarterInvokeHttpResponse invoke(@RequestBody StarterInvokeHttpRequest body) {
+    public AgentInvokeResult invoke(@RequestBody StarterInvokeHttpRequest body) {
         AgentInvokeRequest request = toDomain(body);
         if (!request.hasInput()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "input required");
         }
-        AgentInvokeResult result = requireHandler(request.agentId()).handle(request);
-        return new StarterInvokeHttpResponse(
-                result.agentId(),
-                result.output(),
-                result.inputTokens(),
-                result.outputTokens(),
-                result.data(),
-                result.planActive());
+        return requireHandler(request.agentId()).handle(request);
     }
 
     @PostMapping(value = "/api/agents/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -99,7 +91,7 @@ public class StarterInvokeController {
         }
     }
 
-    static final class SseBridge implements AgentStreamHandler, StreamCancelHook {
+    static final class SseBridge implements AgentStreamHandler {
 
         private final SseEmitter emitter;
 

@@ -78,6 +78,9 @@ dream-scope:
     enabled: true
     directory: plans
   mcp:
+    # 本机演示服务，随 8091 一起听 8093。工具名是服务端公布的 mcp__demo__echo。关掉时把 demo-enabled 设为 false。
+    demo-enabled: true
+    demo-port: 8093
     servers: []
   a2a:
     enabled: true
@@ -109,7 +112,7 @@ dream-scope:
     password: ${NACOS_PASSWORD:}
     prompt:
       # 还要 dream-scope.nacos.enabled=true 才会去拉。key 是 Prompt 资源名，不是 Group=agent 的 Card。
-      enabled: true
+      enabled: false
       sys-prompt-key: dream-scope-chat
       version: ${DREAM_SCOPE_NACOS_PROMPT_VERSION:}
       label: ${DREAM_SCOPE_NACOS_PROMPT_LABEL:}

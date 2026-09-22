@@ -17,3 +17,5 @@ application-local.yml
 .agentscope/
 *.reg
 docs/intent/
+node_modules/
+dist/

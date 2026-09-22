@@ -1,6 +1,5 @@
 package com.zhu.scope.web.controller;
 
-import com.zhu.scope.adapter.event.StreamCancelHook;
 import com.zhu.scope.agent.AgentEvent;
 import com.zhu.scope.agent.AgentHandler;
 import com.zhu.scope.agent.AgentInvokeRequest;
@@ -16,7 +15,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.zhu.scope.adapter.LogText;
 import com.zhu.scope.web.bean.request.AgentInvokeHttpRequest;
-import com.zhu.scope.web.bean.response.AgentInvokeHttpResponse;
 import com.zhu.scope.web.config.DreamScopeProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * 同步 {@code /invoke} 与 SSE {@code /stream}。只认 domain 类型。
+ * 同步 {@code /invoke} 与 SSE {@code /stream}。出参就是 {@link AgentInvokeResult}。
  */
 @RestController
 public class AgentInvokeController {
@@ -48,7 +46,7 @@ public class AgentInvokeController {
     }
 
     @PostMapping("/api/agents/invoke")
-    public AgentInvokeHttpResponse invoke(@RequestBody AgentInvokeHttpRequest body) {
+    public AgentInvokeResult invoke(@RequestBody AgentInvokeHttpRequest body) {
         AgentInvokeRequest request = toDomain(body);
         if (!request.hasInput()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "input required");
@@ -64,20 +62,15 @@ public class AgentInvokeController {
                 LogText.preview(request.input()));
         AgentInvokeResult result = handler.handle(request);
         log.info(
-                "http invoke done agentId={} sessionId={} outputChars={} inTokens={} outTokens={} planActive={}",
+                "http invoke done agentId={} sessionId={} outputChars={} inTokens={} outTokens={} planActive={} trace={}",
                 result.agentId(),
                 request.sessionId(),
                 LogText.chars(result.output()),
                 result.inputTokens(),
                 result.outputTokens(),
-                result.planActive());
-        return new AgentInvokeHttpResponse(
-                result.agentId(),
-                result.output(),
-                result.inputTokens(),
-                result.outputTokens(),
-                result.data(),
-                result.planActive());
+                result.planActive(),
+                result.trace().size());
+        return result;
     }
 
     @PostMapping(value = "/api/agents/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -135,7 +128,7 @@ public class AgentInvokeController {
         }
     }
 
-    static final class SseBridge implements AgentStreamHandler, StreamCancelHook {
+    static final class SseBridge implements AgentStreamHandler {
 
         private final SseEmitter emitter;
 

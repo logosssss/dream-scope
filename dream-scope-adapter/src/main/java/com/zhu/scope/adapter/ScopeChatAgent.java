@@ -1,7 +1,6 @@
 package com.zhu.scope.adapter;
 
 import com.zhu.scope.adapter.event.EventCodec;
-import com.zhu.scope.adapter.event.StreamCancelHook;
 import com.zhu.scope.adapter.middleware.ChatOtel;
 import com.zhu.scope.adapter.middleware.LoggingMiddleware;
 import io.agentscope.core.tracing.OtelTracingMiddleware;
@@ -14,6 +13,8 @@ import com.zhu.scope.agent.AgentEvent;
 import com.zhu.scope.agent.AgentIds;
 import com.zhu.scope.agent.AgentInvokeRequest;
 import com.zhu.scope.agent.AgentInvokeResult;
+import com.zhu.scope.agent.AgentTrace;
+import com.zhu.scope.agent.AgentTraceStep;
 import com.zhu.scope.agent.AgentProviderException;
 import com.zhu.scope.agent.AgentStreamHandler;
 import com.zhu.scope.agent.AgentTimeoutException;
@@ -23,6 +24,8 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelCreationContext;
@@ -81,6 +84,7 @@ import reactor.core.publisher.Mono;
  * .generateOptions          temperature / topP / maxTokens 全空则不调
  * .toolkit                  ChatTools + 可选 MCP（McpClientBuilder.registerMcpClient）+ Harness agent_spawn
  * .disableFilesystemTools   关掉 read_file / write_file 等默认工作区文件工具
+ * .permissionContext        BYPASS：HTTP 没有确认通道，plan_exit / 非只读 MCP 直接执行
  * .disableShellTool         HTTP 进程禁止 shell
  * .compaction / .memory     条数阈值 + MemoryConfig.defaults()
  * .subagents                ChatSubagents.programmatic()；md 子 Agent 另由 workspace 扫描
@@ -110,8 +114,8 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     /**
      * 主系统提示：演示工具 + 子 Agent 路由 + Skill + RAG + MCP。
      *
-     * <p>天气 / 航班 / 摘要必须 {@code agent_spawn}，禁止模型自己编。产品问答走 {@code retrieve}。MCP 工具名以
-     * {@code mcp__} 开头，有才用（{@link ChatMcp} / {@code McpClientBuilder} 注册）。
+     * <p>天气 / 航班 / 摘要必须 {@code agent_spawn}，禁止模型自己编。产品问答走 {@code retrieve}。MCP 用服务端公布的工具名
+     * （{@link ChatMcp} / {@code registerMcpClient}），本机演示是 {@code mcp__demo__echo}。
      */
     private static final String SYS_PROMPT =
             "你是一个有帮助的助手。需要当前时间、四则运算或抓取网页时，调用 getCurrentTime / calculate / httpGet。"
@@ -121,11 +125,11 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     + "子 Agent 返回的是演示结果，转述给用户即可；不要自己编造天气、航班或摘要。"
                     + "当用户要求写会议纪要、讨论要点或待办清单时，先查看 available_skills，调用 load_skill_through_path 加载 meeting-notes 的 SKILL.md，再按其中步骤整理。"
                     + "回答与 dream-scope 产品、架构或调用方式有关的问题时，先调用 retrieve，按返回的 [1][2] 引用，不要编造。"
-                    + "若工具表出现 mcp__ 开头的工具，按需调用。";
+                    + "工具表里的 MCP 工具用服务端公布的名字，看到就按需调用。";
 
     /** 拼在 SYS_PROMPT 后；未开 Plan Mode 不加，避免模型无工具还尝试 {@code plan_enter}。 */
     private static final String PLAN_PROMPT =
-            "复杂任务可先调用 plan_enter，用 plan_write 写下步骤，确认后再 plan_exit 执行。普通问答不必进入计划模式。";
+            "复杂任务可先调用 plan_enter，用 plan_write 写下步骤，然后直接 plan_exit 执行。普通问答不必进入计划模式。";
 
     private final HarnessAgent agent;
 
@@ -236,6 +240,9 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                 .memory(MemoryConfig.defaults())
                 .subagents(chatSubagents())
                 .middlewares(chatMiddlewares(extras))
+                .permissionContext(PermissionContextState.builder()
+                        .mode(PermissionMode.BYPASS)
+                        .build())
                 .disableFilesystemTools()
                 .disableShellTool();
         if (nacosSkills != null) {
@@ -496,45 +503,16 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
      *
      * <p>等待上限是 {@code callTimeout + 5s}：流上已有 {@code .timeout(callTimeout)}，这里多留一点给收尾的 {@code Done}。
      * 优先 {@link AgentEvent.Done} 的正文 / token / structured / planActive；没有 Done 才用拼起来的 TextDelta。
+     * toolCall、toolResult、hint、error 按到达顺序放进 {@code trace}。
+     *
+     * <p>等待失败、超时或线程中断时取消订阅并 {@code interrupt}，避免 HTTP 已返回后模型、工具和子 Agent 还在跑。
+     * Reactor {@code timeout} 只看相邻事件的空闲间隔，持续有事件时靠这里的总时限收口。
      */
     @Override
     public AgentInvokeResult handle(AgentInvokeRequest request) {
         CompletableFuture<AgentInvokeResult> done = new CompletableFuture<>();
-        StringBuilder deltas = new StringBuilder();
-        streamHandle(request, new AgentStreamHandler() {
-            private volatile String lastDone = "";
-            private volatile int inputTokens;
-            private volatile int outputTokens;
-            private volatile Map<String, Object> data;
-            private volatile boolean planActive;
-
-            @Override
-            public void onEvent(AgentEvent event) {
-                if (event instanceof AgentEvent.TextDelta delta && delta.text() != null) {
-                    deltas.append(delta.text());
-                }
-                if (event instanceof AgentEvent.Done completed) {
-                    if (completed.finalOutput() != null) {
-                        lastDone = completed.finalOutput();
-                    }
-                    inputTokens = completed.inputTokens();
-                    outputTokens = completed.outputTokens();
-                    data = completed.data();
-                    planActive = completed.planActive();
-                }
-            }
-
-            @Override
-            public void onComplete() {
-                String text = lastDone.isEmpty() ? deltas.toString() : lastDone;
-                done.complete(new AgentInvokeResult(id(), text, inputTokens, outputTokens, data, planActive));
-            }
-
-            @Override
-            public void onError(Throwable error) {
-                done.completeExceptionally(error);
-            }
-        });
+        InvokeCollector collector = new InvokeCollector(done);
+        streamHandle(request, collector);
         try {
             AgentInvokeResult result = done.get(callTimeout.plusSeconds(5).toMillis(), TimeUnit.MILLISECONDS);
             log.info(
@@ -546,13 +524,16 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                     result.planActive());
             return result;
         } catch (InterruptedException ex) {
+            collector.cancel();
             Thread.currentThread().interrupt();
             log.warn("chat invoke interrupted sessionId={}", request.sessionId());
             throw new AgentProviderException("chat model call interrupted", ex);
         } catch (TimeoutException ex) {
+            collector.cancel();
             log.warn("chat invoke timeout sessionId={} timeout={}", request.sessionId(), callTimeout);
             throw new AgentTimeoutException("chat timed out after " + callTimeout, ex);
         } catch (ExecutionException ex) {
+            collector.cancel();
             log.warn("chat invoke failed sessionId={} message={}", request.sessionId(), ex.getCause() == null ? ex.getMessage() : ex.getCause().getMessage());
             throw mapStreamError(ex.getCause() == null ? ex : ex.getCause());
         }
@@ -563,7 +544,7 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
      *
      * <p>{@link AgentSpawnTool#CTX_FORCE_SYNC}：子 Agent 同步跑完再继续主循环，避免 HTTP 超时后后台还在 spawn。
      *
-     * <p>handler 若实现 {@link StreamCancelHook}（SSE 桥），把 {@code dispose + interrupt} 绑上去；测试桩不实现则跳过。
+     * <p>订阅后调用 {@link AgentStreamHandler#bindCancel}，把 {@code dispose + interrupt} 绑上去。默认实现忽略。
      */
     @Override
     public void streamHandle(AgentInvokeRequest request, AgentStreamHandler handler) {
@@ -618,16 +599,14 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
                                 handler.onComplete();
                             });
         }
-        if (handler instanceof StreamCancelHook hook) {
-            hook.bindCancel(() -> {
-                disposable.dispose();
-                try {
-                    agent.interrupt(context);
-                } catch (RuntimeException ignored) {
-                    // 订阅已取消即可
-                }
-            });
-        }
+        handler.bindCancel(() -> {
+            disposable.dispose();
+            try {
+                agent.interrupt(context);
+            } catch (RuntimeException ignored) {
+                // 订阅已取消即可
+            }
+        });
     }
 
     /**
@@ -736,5 +715,78 @@ public final class ScopeChatAgent implements StreamingAgentHandler, AutoCloseabl
     /** 空白当没传。会话槽位要求 userId、sessionId 都非空，单边空白必须变成 null 交给框架。 */
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    /**
+     * 同步 invoke 的事件收集器。覆盖 {@link AgentStreamHandler#bindCancel}，让 {@link #streamHandle} 把 dispose + interrupt 绑过来。
+     */
+    private final class InvokeCollector implements AgentStreamHandler {
+
+        private final CompletableFuture<AgentInvokeResult> done;
+
+        private final StringBuilder deltas = new StringBuilder();
+
+        private final List<AgentTraceStep> trace = new ArrayList<>();
+
+        private volatile Runnable cancelTask = () -> {};
+
+        private volatile String lastDone = "";
+
+        private volatile int inputTokens;
+
+        private volatile int outputTokens;
+
+        private volatile Map<String, Object> data;
+
+        private volatile boolean planActive;
+
+        private InvokeCollector(CompletableFuture<AgentInvokeResult> done) {
+            this.done = done;
+        }
+
+        @Override
+        public void bindCancel(Runnable cancel) {
+            this.cancelTask = cancel == null ? () -> {} : cancel;
+        }
+
+        void cancel() {
+            try {
+                cancelTask.run();
+            } catch (RuntimeException ex) {
+                log.warn("chat invoke cancel failed: {}", ex.getMessage());
+            }
+        }
+
+        @Override
+        public void onEvent(AgentEvent event) {
+            if (event instanceof AgentEvent.TextDelta delta && delta.text() != null) {
+                deltas.append(delta.text());
+            }
+            AgentTraceStep step = AgentTrace.from(event);
+            if (step != null) {
+                trace.add(step);
+            }
+            if (event instanceof AgentEvent.Done completed) {
+                if (completed.finalOutput() != null) {
+                    lastDone = completed.finalOutput();
+                }
+                inputTokens = completed.inputTokens();
+                outputTokens = completed.outputTokens();
+                data = completed.data();
+                planActive = completed.planActive();
+            }
+        }
+
+        @Override
+        public void onComplete() {
+            String text = lastDone.isEmpty() ? deltas.toString() : lastDone;
+            done.complete(new AgentInvokeResult(
+                    id(), text, inputTokens, outputTokens, data, planActive, List.copyOf(trace)));
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            done.completeExceptionally(error);
+        }
     }
 }

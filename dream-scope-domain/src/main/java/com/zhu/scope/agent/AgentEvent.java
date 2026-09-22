@@ -26,7 +26,7 @@ import java.util.Map;
  *   <li>生产：{@code EventCodec.toDomain} / {@code toStreamEvent}（chat）；知识库 handler 直接
  *       {@code new TextDelta} + {@code new Done}。
  *   <li>消费：{@link AgentStreamHandler#onEvent}。web {@code SseBridge} 按上面的表推送；同步
- *       {@code /invoke} 则把流上的 {@link Done} 收成 {@link AgentInvokeResult}。
+ *       {@code /invoke} 把 {@link Done} 收成 {@link AgentInvokeResult}，并把 toolCall / toolResult / hint / error 收进 trace。
  * </ul>
  *
  * <p>框架内部态（工具 start/delta、{@code ModelCallEndEvent} 等）不会变成 {@code AgentEvent}，由 codec

@@ -33,8 +33,9 @@
 | `dream-scope-knowledge` | RAG 实现，只依赖 domain |
 | `dream-scope-web` | **默认产品入口**：手写 `PortsConfig` + HTTP / Actuator / SSE（端口 `8091`） |
 | `dream-scope-boot` | **可选对照入口**：官方 `agentscope-spring-boot-starter`（端口 `8092`），不替代 web |
+| `dream-scope-ui` | Vue 页面，开发时 Vite `5173` 把 `/api`、`/a2a`、`/.well-known` 代理到 `8091` |
 
-内置 `agentId`：`chat`（默认）、`knowledge`（只检索，不调模型）。配了 `dream-scope.a2a.remote-url` 或 Nacos A2A 发现时还有 `a2a`。`task` 预留，调用返回 `404`。chat 也可调 `retrieve`。索引是进程内关键词，启动时写入几条演示文案，没有向量库。
+内置 `agentId`：`chat`（默认）、`knowledge`（只检索，不调模型）。配了 `dream-scope.a2a.remote-url` 或 Nacos A2A 发现时还有 `a2a`。`task` 预留，调用返回 `404`。chat 也可调 `retrieve`。检索默认混合：有 embedding Key 时走内存向量或 pgvector，并和关键词索引做 RRF；没有 Key 或 embedding 失败时只用进程内关键词。
 
 ## 环境
 
@@ -92,11 +93,21 @@ $env:DASHSCOPE_API_KEY = "your-key"
 ```bash
 mvn -q test
 mvn -pl dream-scope-web -am spring-boot:run
-# 对照：官方 starter（端口 8092，无 Redis / Harness）
+# 对照：官方 starter（端口 8092，无 Redis / Harness）。演示 MCP 在 8093，不抢这个端口。
 # mvn -pl dream-scope-boot -am spring-boot:run
 ```
 
-默认端口 `8091`。观测：
+页面（另开一个终端，先有 8091）：
+
+```bash
+cd dream-scope-ui
+npm install
+npm run dev
+```
+
+浏览器打开 `http://127.0.0.1:5173`。需要 Node 20+。页面没有登录，只调用已有接口。
+
+默认端口 `8091`。演示 MCP 不是单独进程，随 8091 听在 `127.0.0.1:8093`（`dream-scope.mcp.demo-port`）。对照入口仍是 `8092`。观测：
 
 ```bash
 curl http://localhost:8091/actuator/health
@@ -159,9 +170,9 @@ curl -s http://localhost:8092/api/agents/invoke \
 
 模型超时返回 `504`，供应商/运行失败返回 `502`。
 
-chat 已注册演示工具（无 Spring）：`getCurrentTime`、`calculate`（四则运算）、`httpGet`（仅 http/https，截断响应体）、`retrieve`（进程内关键词检索，返回 `[1]` 编号资料）。模型需要时会走 ReAct 调工具。Harness 默认的工作区 `read_file`/`write_file`/`shell` **已关闭**，避免 HTTP 进程在本机执行文件和命令。
+chat 已注册演示工具（无 Spring）：`getCurrentTime`、`calculate`（四则运算）、`httpGet`（仅 http/https，截断响应体）、`retrieve`（混合检索，返回 `[1]` 编号资料）。模型需要时会走 ReAct 调工具。Harness 默认的工作区 `read_file`/`write_file`/`shell` **已关闭**，避免 HTTP 进程在本机执行文件和命令。
 
-默认开启 Plan Mode：模型可自行 `plan_enter` / `plan_write` / `plan_exit`（计划文件写在工作区 `plans/`）。不提供 HTTP 手动进入，也不做人审确认；计划模式里仍然不允许 Shell。普通问答模型不进计划则行为与原来相同。`/invoke` 与 SSE `done` 带 `planActive`。
+默认开启 Plan Mode：模型可自行 `plan_enter` / `plan_write` / `plan_exit`（计划文件写在工作区 `plans/`）。不提供 HTTP 手动进入。chat 的权限模式是 `BYPASS`，`plan_exit` 直接执行，不等人确认；文件和 Shell 仍然关闭。已经停在确认上的旧会话不会自己恢复，换一个 `sessionId`。普通问答模型不进计划则行为与原来相同。`/invoke` 与 SSE `done` 带 `planActive`。
 
 chat 挂了 `OtelTracingMiddleware` + `LoggingMiddleware`（无 Spring 注解）。日志打 `onAgent` / `onModelCall` / `onActing` 的 start/complete（含 `agentId`、`sessionId`、耗时）。看控制台即可。
 
@@ -282,7 +293,9 @@ curl -s http://localhost:8091/api/agents/invoke \
 
 ## MCP
 
-Harness 在 `build()` 时读工作区 `tools.json` 的 `mcpServers`。启动会先拷 bundled 空文件，再按 `dream-scope.mcp.servers` 覆写。只允许 `streamableHttp` / `sse`（http/https），**禁止 stdio**（HTTP 进程不拉本地 MCP 子进程）。配了之后模型会看到 `mcp__{name}__{tool}`。未配服务器则工具表不变。
+Harness 在 `build()` 时读工作区 `tools.json` 的 `mcpServers`。本仓库把这份文件保持为空，避免和下面的客户端连两次。只允许 `streamableHttp` / `sse`（http/https），**禁止 stdio**（HTTP 进程不拉本地 MCP 子进程）。工具名是 MCP 服务自己公布的名字，AgentScope 不会再加 `mcp__` 前缀。
+
+本机演示服务默认随 8091 启动，地址 `http://127.0.0.1:8093/mcp`，工具名 `mcp__demo__echo`，标成只读。关掉：`dream-scope.mcp.demo-enabled=false`。额外服务器写在 `dream-scope.mcp.servers`。未标只读的外部工具也会在 `BYPASS` 下直接执行。
 
 ```yaml
 dream-scope:
@@ -324,9 +337,9 @@ Prompt 在 Nacos AI 里建 key=`dream-scope-chat` 的模板（不是配置中心
 
 ## Roadmap
 
-HITL、knowledge 调模型、入库/向量检索。
+knowledge Agent 调模型。
 
-不做：计费、管理后台。
+不做：计费、管理后台、HTTP 人工确认。
 
 ## License
 

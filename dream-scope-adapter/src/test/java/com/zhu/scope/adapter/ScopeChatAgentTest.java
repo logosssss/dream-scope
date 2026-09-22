@@ -26,6 +26,7 @@ import io.agentscope.core.model.Model;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -175,6 +176,29 @@ class ScopeChatAgentTest {
             assertThrows(
                     AgentTimeoutException.class,
                     () -> agent.handle(new AgentInvokeRequest(AgentIds.CHAT, "s", "u", "你好")));
+        }
+    }
+
+    @Test
+    void handleOverallTimeoutCancelsStream() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        Model chatModel = mock(Model.class);
+        when(chatModel.getModelName()).thenReturn("mock-chat");
+        when(chatModel.stream(any(), any(), any()))
+                .thenReturn(Flux.interval(Duration.ofMillis(20))
+                        .map(tick -> ChatResponse.builder()
+                                .content(List.of(TextBlock.builder().text("x").build()))
+                                .build())
+                        .doOnCancel(() -> cancelled.set(true)));
+
+        ScopeChatAgent agent = new ScopeChatAgent(chatModel, Duration.ofMillis(80), null);
+        try {
+            assertThrows(
+                    AgentTimeoutException.class,
+                    () -> agent.handle(new AgentInvokeRequest(AgentIds.CHAT, "s", "u", "你好")));
+            assertTrue(cancelled.get());
+        } finally {
+            agent.close();
         }
     }
 

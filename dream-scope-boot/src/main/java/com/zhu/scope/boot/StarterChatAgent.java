@@ -2,7 +2,6 @@ package com.zhu.scope.boot;
 
 import com.zhu.scope.adapter.MessageCodec;
 import com.zhu.scope.adapter.event.EventCodec;
-import com.zhu.scope.adapter.event.StreamCancelHook;
 import com.zhu.scope.agent.AgentEvent;
 import com.zhu.scope.agent.AgentIds;
 import com.zhu.scope.agent.AgentInvokeRequest;
@@ -80,16 +79,14 @@ public final class StarterChatAgent implements StreamingAgentHandler {
                         event -> codec.toDomain(event).ifPresent(handler::onEvent),
                         error -> handler.onError(mapError(error)),
                         handler::onComplete);
-        if (handler instanceof StreamCancelHook hook) {
-            hook.bindCancel(() -> {
-                disposable.dispose();
-                try {
-                    agent.interrupt(context);
-                } catch (RuntimeException ignored) {
-                    // 订阅已取消即可
-                }
-            });
-        }
+        handler.bindCancel(() -> {
+            disposable.dispose();
+            try {
+                agent.interrupt(context);
+            } catch (RuntimeException ignored) {
+                // 订阅已取消即可
+            }
+        });
     }
 
     private Mono<Msg> callMono(Msg inbound, RuntimeContext context, AgentInvokeRequest request) {
