@@ -8,6 +8,10 @@ logging:
     com.alibaba.nacos: WARN
 
 spring:
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
   application:
     name: dream-scope-boot
   config:
@@ -32,6 +36,9 @@ spring:
         fail-fast: false
 
 management:
+  health:
+    elasticsearch:
+      enabled: false
   endpoints:
     web:
       exposure:
@@ -39,14 +46,51 @@ management:
 
 dream-scope:
   chat-timeout: 120s
+  mcp:
+    demo-enabled: true
+    demo-port: 8094
+  plan:
+    directory: plans
+    max-iters: 10
+  redis:
+    uri: ${DREAM_SCOPE_REDIS_URI:redis://127.0.0.1:6379}
+    key-prefix: "dream-scope-boot:"
+  compaction:
+    trigger-messages: 30
+    keep-messages: 10
+  eviction:
+    max-result-chars: 80000
+    preview-chars: 2000
+    path: large_tool_results
+  skills:
+    directory: skills
+  model:
+    fallback: ${DREAM_SCOPE_MODEL_FALLBACK:}
+    fallback-api-key: ${DREAM_SCOPE_MODEL_FALLBACK_API_KEY:}
+    temperature:
+    top-p:
+    max-tokens:
+  knowledge:
+    api-key: ${DASHSCOPE_API_KEY:}
+    embedding-model: text-embedding-v4
+    embedding-dimensions: 1024
+    chunk-size: 2000
+    chunk-overlap: 200
+    score-threshold: 0.3
+    pg:
+      jdbc-url: ${DREAM_SCOPE_RAG_PG_JDBC_URL:}
+      username: ${DREAM_SCOPE_RAG_PG_USERNAME:postgres}
+      password: ${DREAM_SCOPE_RAG_PG_PASSWORD:postgres}
+      schema: public
+      table: dream_scope_boot_rag
 
-# 官方 starters。厂商只按 agentscope.model.provider 启用一个 Model。
+# 官方 starters。同一时间只把 agentscope.model.provider 对应的那一家 enabled 设为 true。
 # Nacos：prompt / A2A（agentscope.*）与配置中心 / 服务发现（spring.cloud.nacos.*）都默认关。
 agentscope:
   agent:
     enabled: true
     name: chat
-    sys-prompt: 你是一个有帮助的助手。
+    sys-prompt: 你是一个有帮助的助手。工具表里有 mcp__boot__echo，需要把原文回声时就调用它。回答产品或调用方式前先调用 retrieve，再按 [1][2] 引用。
     max-iters: 10
   model:
     provider: dashscope
@@ -56,22 +100,22 @@ agentscope:
     model-name: qwen-plus
     stream: true
   openai:
-    enabled: true
+    enabled: false
     api-key: ${OPENAI_API_KEY:}
     model-name: gpt-4.1-mini
     stream: true
   anthropic:
-    enabled: true
+    enabled: false
     api-key: ${ANTHROPIC_API_KEY:}
     model-name: claude-sonnet-4.5
     stream: true
   gemini:
-    enabled: true
+    enabled: false
     api-key: ${GEMINI_API_KEY:}
     model-name: gemini-2.0-flash
     stream: true
   ollama:
-    enabled: true
+    enabled: false
     model-name: llama3
     base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
   chat-completions:
@@ -93,10 +137,19 @@ agentscope:
         description: AgentScope official starter 对照入口
         url: http://127.0.0.1:8092
     nacos:
-      enabled: false
+      enabled: true
+    client:
+      enabled: true
+      url: http://127.0.0.1:8092
+      name: remote
   nacos:
     server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
     username: ${NACOS_USERNAME:}
     password: ${NACOS_PASSWORD:}
     prompt:
       enabled: false
+    skill:
+      enabled: true
+      namespace: ${NACOS_NAMESPACE:}
+      names:
+        - boot-echo

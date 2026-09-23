@@ -12,16 +12,37 @@
 
     <artifactId>dream-scope-boot</artifactId>
     <name>dream-scope-boot</name>
-    <description>可选入口：官方 AgentScope Spring Boot starters。不替代 dream-scope-web。</description>
+    <description>可选入口：官方 AgentScope Spring Boot starters。不依赖 domain / adapter，不替代 dream-scope-web。</description>
 
     <dependencies>
         <dependency>
-            <groupId>com.zhu</groupId>
-            <artifactId>dream-scope-domain</artifactId>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-harness</artifactId>
+            <version>${agentscope.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.zhu</groupId>
-            <artifactId>dream-scope-adapter</artifactId>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-rag-simple</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-redis</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-nacos-skill</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-a2a-client</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
         </dependency>
         <dependency>
             <groupId>io.agentscope</groupId>

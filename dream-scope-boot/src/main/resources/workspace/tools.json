@@ -1,0 +1,3 @@
+{
+  "deny": ["web_fetch", "web_search", "write_file", "edit_file"]
+}

@@ -32,14 +32,14 @@ import java.util.function.Function;
  * <p>用量同理：{@link ModelCallEndEvent}（以及 {@link #toDone} / {@link #toStreamEvent} 里 {@link Msg#getChatUsage()}）
  * 只负责累加，不单独对外发；token 挂到最终的 {@link AgentEvent.Done}。
  *
- * <p>Reactor 订阅线程对同一流通常是串行投递，本类<strong>非线程安全</strong>。{@code ScopeChatAgent} /
- * {@code StarterChatAgent} 每次 {@code streamHandle} 都 {@code new EventCodec()}，不要跨请求复用。
+ * <p>Reactor 订阅线程对同一流通常是串行投递，本类<strong>非线程安全</strong>。{@code ScopeChatAgent}
+ * 每次 {@code streamHandle} 都 {@code new EventCodec()}，不要跨请求复用。boot 使用自己的编解码。
  *
  * <h2>两条入口对应两条 AgentScope 流</h2>
  *
  * <ul>
  *   <li>{@link #toDomain}：{@code agent.streamEvents(...)} 的类型化 {@code io.agentscope.core.event.AgentEvent}
- *       （产品路径默认走这里；boot 的 starter 路径也走这里）。
+ *       （产品路径走这里）。
  *   <li>{@link #toDone}：结构化输出走 {@code agent.call(..., schema|Class)}，只有最终 {@link Msg}，没有类型化事件流。
  *   <li>{@link #toStreamEvent}：已弃用的粗粒度 {@link Event} 流；2.0.3 的 {@code stream()} 标了 forRemoval，产品路径不再调用。
  * </ul>

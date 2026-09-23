@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
 /**
- * 官方 AgentScope starter 入口。扫描仅限本包，避免和 {@code dream-scope-web} 的 PortsConfig 叠在同一进程。
+ * 官方 AgentScope starter 入口。扫描本包及子包，避免和 {@code dream-scope-web} 的 PortsConfig 叠在同一进程。
  */
 @SpringBootApplication(scanBasePackages = "com.zhu.scope.boot")
 @EnableDiscoveryClient
